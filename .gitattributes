@@ -1,0 +1,10 @@
+# Normalize line endings to LF in the repo, convert to CRLF on Windows checkout
+* text=auto eol=lf
+
+# Force binary for images/screenshots
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pcap binary

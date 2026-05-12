@@ -1,0 +1,59 @@
+@import "leaflet/dist/leaflet.css";
+
+:root {
+  --color-bg: #f5f7fa;
+  --color-surface: #ffffff;
+  --color-surface-alt: #eef2f6;
+  --color-border: #c8d1dc;
+  --color-text: #17212f;
+  --color-text-muted: #5d6b7a;
+  --color-primary: #1f6feb;
+  --color-primary-strong: #174ea6;
+  --color-accent: #0f766e;
+  --color-success: #15803d;
+  --color-warning: #b45309;
+  --color-danger: #b91c1c;
+  --font-body: "Segoe UI", Roboto, Arial, sans-serif;
+  --font-mono: Consolas, ui-monospace, SFMono-Regular, monospace;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--color-text);
+  background: var(--color-bg);
+}
+
+button,
+select {
+  font: inherit;
+}
+
+.page-stub {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 960px;
+}
+
+.page-stub h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  line-height: 1.25;
+}
+
+.phase-label {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.research-subtitle {
+  color: var(--color-accent);
+  font-weight: 700;
+}

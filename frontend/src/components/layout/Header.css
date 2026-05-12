@@ -1,0 +1,80 @@
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 52px;
+  padding: 0 16px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.header-app-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--color-text);
+}
+
+.header-divider {
+  color: var(--color-border);
+}
+
+.header-folder {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-mode-badge,
+.header-warning-badge {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.mode-wifi { background: #dbeafe; color: #1d4ed8; }
+.mode-ble { background: #d1fae5; color: #065f46; }
+.mode-unknown { background: var(--color-surface-alt); color: var(--color-text-muted); }
+
+.header-artifact {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+}
+
+.header-warning-badge {
+  background: var(--color-surface-alt);
+  color: var(--color-text-muted);
+  text-transform: none;
+}
+
+.header-warning-badge.has-warnings {
+  background: #fef3c7;
+  color: var(--color-warning);
+}
+
+.header-spacer { flex: 1; }
+
+.btn-save-session {
+  font-size: 0.875rem;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.btn-save-session:disabled {
+  cursor: not-allowed;
+}
+
+.btn-save-session:not(:disabled) {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  font-weight: 600;
+}
