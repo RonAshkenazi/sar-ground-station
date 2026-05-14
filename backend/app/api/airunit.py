@@ -60,6 +60,8 @@ async def pi_ws(websocket: WebSocket) -> None:
 
             msg_type = msg.get("type") or msg.get("msg_type")
             if msg_type in ("POSE", "EVIDENCE", "HEALTH"):
+                if msg_type == "POSE" and "sniffer_alive" not in msg:
+                    msg["sniffer_alive"] = True
                 get_engine().ingest(msg)
 
             await _relay_to_frontends(msg)

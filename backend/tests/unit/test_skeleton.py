@@ -2281,3 +2281,325 @@ def test_guidance_engine_ingest_pose_and_recommend(monkeypatch) -> None:
     assert "target_lat" in rec
     assert "bearing_deg" in rec
     assert rec["gps_valid"] is True
+
+
+def test_guidance_pose_omitted_sniffer_alive_preserves_state(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.0005,
+            "lon": 34.0005,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        }
+    )
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.0006,
+            "lon": 34.0006,
+            "gps_valid": True,
+        }
+    )
+
+    rec = engine.get_recommendation()
+
+    assert rec is not None
+    assert rec["gps_valid"] is True
+
+
+def test_guidance_engine_targets_current_gps_cell_without_evidence(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    bounds = {
+        "min_lat": 31.258518102089145,
+        "max_lat": 31.25953153433061,
+        "min_lon": 34.793014526367195,
+        "max_lon": 34.79415178298951,
+    }
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        }
+    )
+
+    rec = engine.get_recommendation()
+
+    assert rec is not None
+    assert rec["target_cell_id"] == 6
+    assert rec["reason"] == "Current Pi GPS cell"
+
+
+def test_guidance_pose_lowers_uncertainty_for_current_cell(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    bounds = {
+        "min_lat": 31.258518102089145,
+        "max_lat": 31.25953153433061,
+        "min_lon": 34.793014526367195,
+        "max_lon": 34.79415178298951,
+    }
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        }
+    )
+
+    grid = engine.get_grid_state()
+    assert grid is not None
+    cell_6 = next(cell for cell in grid["cells"] if cell["cell_id"] == 6)
+    assert cell_6["uncertainty_score"] < 1.0
+    assert cell_6["age_score"] == 0.0
+
+
+def test_guidance_pi_sender_evidence_endpoint_updates_cell_score() -> None:
+    from app.main import create_app
+
+    client = TestClient(create_app())
+    client.post("/api/guidance/reset")
+    client.post(
+        "/api/guidance/init",
+        json={
+            "min_lat": 31.258518102089145,
+            "max_lat": 31.25953153433061,
+            "min_lon": 34.793014526367195,
+            "max_lon": 34.79415178298951,
+            "cell_size_m": 30.0,
+        },
+    )
+    client.post(
+        "/api/guidance/pose",
+        json={
+            "msg_type": "POSE",
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        },
+    )
+    client.post(
+        "/api/guidance/evidence",
+        json={
+            "msg_type": "EVIDENCE",
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "win_ms": 2000,
+            "frames_total": 10,
+            "frames_strong": 8,
+            "rssi_max_dbm": -58.0,
+            "rssi_p95_dbm": -61.0,
+            "rssi_mean_dbm": -64.0,
+        },
+    )
+
+    grid = client.get("/api/guidance/grid").json()
+    cell_6 = next(cell for cell in grid["cells"] if cell["cell_id"] == 6)
+    rec = client.get("/api/guidance/recommendation").json()
+
+    assert cell_6["evidence_score"] > 0.0
+    assert rec["available"] is True
+    assert rec["target_cell_id"] == 6
+
+
+def test_airunit_guidance_reads_existing_newest_wifi_csv_not_ble(tmp_path, monkeypatch) -> None:
+    import importlib
+    import os
+    import sys
+
+    airunit_path = Path(__file__).resolve().parents[3] / "airunit"
+    sys.path.insert(0, str(airunit_path))
+    guidance_sender = importlib.import_module("guidance_sender")
+
+    monkeypatch.setattr(guidance_sender.config, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(guidance_sender.config, "LOG_FILE_PREFIX", "scan_")
+
+    scan_csv = tmp_path / "scan_2026-05-15_00-00-00Z.csv"
+    scan_csv.write_text(
+        guidance_sender.config.CSV_HEADER
+        + "\n"
+        + "2026-05-15T00:00:00Z,probe-req,aa:bb,ff:ff,bb:ss,test,-61,6,2437,"
+        + "31.2589,34.7937,10,1,7,0.9,100\n",
+        encoding="utf-8",
+    )
+    ble_csv = tmp_path / "ble_2026-05-15_00-01-00Z.csv"
+    ble_csv.write_text(
+        guidance_sender.config.BLE_CSV_HEADER
+        + "\n"
+        + "2026-05-15T00:01:00Z,adv,11:22,random,-40,,,,,,31,34,10,1,7,0.9,100\n",
+        encoding="utf-8",
+    )
+    os.utime(scan_csv, (1, 1))
+    os.utime(ble_csv, (2, 2))
+
+    sender = object.__new__(guidance_sender.GuidanceSender)
+    state = {"file": None, "path": None}
+
+    rows = sender._read_new_csv_rows(state)
+
+    assert state["path"] == scan_csv
+    assert len(rows) == 1
+    assert rows[0]["frame_type"] == "probe-req"
+    assert rows[0]["rssi_dbm"] == "-61"
+    state["file"].close()
+
+
+def test_airunit_guidance_builds_valid_evidence_packet_from_wifi_rows(monkeypatch) -> None:
+    import importlib
+    import sys
+
+    airunit_path = Path(__file__).resolve().parents[3] / "airunit"
+    sys.path.insert(0, str(airunit_path))
+    guidance_sender = importlib.import_module("guidance_sender")
+
+    class FakeGpsState:
+        def get(self):
+            return {
+                "gps_lat": None,
+                "gps_lon": None,
+                "gps_fix": 0,
+            }
+
+    monkeypatch.setattr(guidance_sender.config, "HOP_ENABLED", True)
+    monkeypatch.setattr(guidance_sender.config, "HOP_INTERVAL_SEC", 0.5)
+
+    sender = object.__new__(guidance_sender.GuidanceSender)
+    sender._gps_state = FakeGpsState()
+    sender._seq = 0
+    sender._evidence_rows_seen = 0
+    rows = [
+        {"frame_type": "probe-req", "rssi_dbm": "-75", "gps_lat": "31.2589", "gps_lon": "34.7937"},
+        {"frame_type": "probe-resp", "rssi_dbm": "-62", "gps_lat": "31.2590", "gps_lon": "34.7938"},
+        {"frame_type": "heartbeat", "rssi_dbm": "", "gps_lat": "31.2591", "gps_lon": "34.7939"},
+    ]
+
+    packet = sender._build_evidence_packet(rows, 1000, 3000)
+
+    assert packet["lat"] == pytest.approx(31.2591)
+    assert packet["lon"] == pytest.approx(34.7939)
+    assert packet["win_ms"] == 2000
+    assert packet["dwell_ms"] == 500
+    assert packet["frames_total"] == 2
+    assert packet["frames_strong"] == 1
+    assert packet["rssi_max_dbm"] == -62.0
+    assert packet["rssi_p95_dbm"] == -62.0
+    assert packet["rssi_mean_dbm"] == pytest.approx(-68.5)
+
+
+def test_guidance_debug_reports_ingested_evidence_packet() -> None:
+    client = TestClient(create_app())
+    client.post("/api/guidance/reset")
+    client.post(
+        "/api/guidance/init",
+        json={
+            "min_lat": 31.258518102089145,
+            "max_lat": 31.25953153433061,
+            "min_lon": 34.793014526367195,
+            "max_lon": 34.79415178298951,
+            "cell_size_m": 30.0,
+        },
+    )
+    client.post(
+        "/api/guidance/pose",
+        json={
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        },
+    )
+    client.post(
+        "/api/guidance/evidence",
+        json={
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "win_ms": 2000,
+            "frames_total": 10,
+            "frames_strong": 8,
+            "rssi_max_dbm": -58.0,
+            "rssi_p95_dbm": -61.0,
+            "rssi_mean_dbm": -64.0,
+        },
+    )
+
+    debug = client.get("/api/guidance/debug").json()
+
+    assert debug["initialized"] is True
+    assert debug["last_pose_ms"] is not None
+    assert debug["gps_valid"] is True
+    assert debug["sniffer_alive"] is True
+    assert debug["last_evidence_ms"] is not None
+    assert debug["last_evidence_drop_reason"] is None
+    assert debug["evidence_packets_ingested"] == 1
+    assert debug["evidence_packets_dropped"] == 0
+    assert debug["last_evidence_packet"]["frames_total"] == 10
+    assert debug["last_evidence_packet"]["cell_id"] == 6
+    assert debug["max_evidence_cell"]["cell_id"] == 6
+    assert debug["max_evidence_cell"]["evidence_score"] > 0.0
+
+
+def test_guidance_debug_reports_dropped_evidence_reason() -> None:
+    client = TestClient(create_app())
+    client.post("/api/guidance/reset")
+    client.post(
+        "/api/guidance/init",
+        json={
+            "min_lat": 31.258518102089145,
+            "max_lat": 31.25953153433061,
+            "min_lon": 34.793014526367195,
+            "max_lon": 34.79415178298951,
+            "cell_size_m": 30.0,
+        },
+    )
+    client.post(
+        "/api/guidance/evidence",
+        json={
+            "lat": 31.26,
+            "lon": 34.7937,
+            "win_ms": 2000,
+            "frames_total": 10,
+            "frames_strong": 8,
+            "rssi_max_dbm": -58.0,
+        },
+    )
+
+    debug = client.get("/api/guidance/debug").json()
+
+    assert debug["initialized"] is True
+    assert debug["last_evidence_ms"] is None
+    assert debug["last_evidence_drop_reason"] == "outside_grid"
+    assert debug["evidence_packets_ingested"] == 0
+    assert debug["evidence_packets_dropped"] == 1
+    assert debug["last_evidence_packet"]["lat"] == 31.26
+    assert debug["max_evidence_cell"]["evidence_score"] == 0.0

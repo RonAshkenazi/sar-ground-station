@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field
 
 from scan_manager import ScanManager, WORKDIR
 from ble_scan_manager import BleScanManager
+import config
+from guidance_sender import GuidanceSender
+from provisioning import load_network_config
 
 LOGDIR = WORKDIR / "logs"
 DESCRIPTIONS_FILE = LOGDIR / "scan_descriptions.json"
@@ -77,12 +80,23 @@ app.add_middleware(
 
 clients = set()
 _event_loop: Optional[asyncio.AbstractEventLoop] = None  # filled at startup
+guidance_sender: Optional[GuidanceSender] = None
 
 
 @app.on_event("startup")
 async def _capture_loop():
-    global _event_loop
+    global _event_loop, guidance_sender
     _event_loop = asyncio.get_running_loop()
+    network_config = load_network_config() or {}
+    ground_station_url = network_config.get("ground_station_url") or config.GROUND_STATION_URL
+    guidance_sender = GuidanceSender(ground_station_url, manager)
+    guidance_sender.start()
+
+
+@app.on_event("shutdown")
+async def _stop_guidance_sender():
+    if guidance_sender is not None:
+        guidance_sender.stop()
 
 
 async def _broadcast(msg: Dict[str, Any]):
@@ -111,7 +125,9 @@ manager = ScanManager(
         broadcast({"type": "status", "status": f"running({count})"}),
     ),
     on_exit=lambda code: broadcast({"type": "status", "status": f"exited({code})", "code": code}),
-    on_pose=lambda pose: broadcast(pose),
+    on_pose=lambda pose: broadcast(
+        {**pose, "sniffer_alive": manager.status().startswith("running")}
+    ),
 )
 
 ble_manager = BleScanManager(

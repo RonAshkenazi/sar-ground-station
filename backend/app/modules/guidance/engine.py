@@ -86,6 +86,36 @@ class GuidanceEngine:
                 ],
             }
 
+    def get_debug_state(self) -> dict:
+        with self._lock:
+            if self._state is None:
+                return {"initialized": False}
+
+            diag = self._state.evidence_diagnostics
+            max_cell = None
+            if self._state.cell_states:
+                best = max(self._state.cell_states.values(), key=lambda cs: cs.evidence_score)
+                max_cell = {
+                    "cell_id": best.cell_id,
+                    "evidence_score": best.evidence_score,
+                    "center_lat": best.center_lat,
+                    "center_lon": best.center_lon,
+                    "last_seen_ms": best.last_seen_ms,
+                }
+
+            return {
+                "initialized": self._state.grid is not None,
+                "last_pose_ms": self._state.drone.last_pose_ms,
+                "gps_valid": self._state.drone.gps_valid,
+                "sniffer_alive": self._state.drone.sniffer_alive,
+                "last_evidence_ms": diag.last_evidence_ms,
+                "last_evidence_drop_reason": diag.last_evidence_drop_reason,
+                "last_evidence_packet": diag.last_evidence_packet,
+                "evidence_packets_ingested": diag.evidence_packets_ingested,
+                "evidence_packets_dropped": diag.evidence_packets_dropped,
+                "max_evidence_cell": max_cell,
+            }
+
     def is_initialized(self) -> bool:
         with self._lock:
             return self._state is not None

@@ -1,4 +1,5 @@
 import csv
+import io
 import logging
 import threading
 import time
@@ -41,6 +42,35 @@ def _percentile_95(values: list) -> float:
     return sorted_vals[idx]
 
 
+def _gps_value(gps, attr_name: str, dict_name: str, default=None):
+    if isinstance(gps, dict):
+        return gps.get(dict_name, default)
+    return getattr(gps, attr_name, default)
+
+
+def _to_float(value) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _latest_row_float(rows: list, key: str) -> Optional[float]:
+    for row in reversed(rows):
+        value = _to_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _dwell_ms() -> int:
+    if getattr(config, "HOP_ENABLED", False):
+        return int(config.HOP_INTERVAL_SEC * 1000)
+    return int(config.GUIDANCE_EVIDENCE_INTERVAL_SEC * 1000)
+
+
 class GuidanceSender:
     """Background service that sends pose, evidence, and health packets to the Ground Station."""
 
@@ -50,6 +80,8 @@ class GuidanceSender:
         self._gps_state, self._gps_stop, self._gps_thread = start_gps()
         self._seq = 0
         self._packets_sent = 0
+        self._evidence_packets_sent = 0
+        self._evidence_rows_seen = 0
         self._dropped_msgs = 0
         self._last_error: Optional[str] = None
         self._stop_event = threading.Event()
@@ -106,12 +138,12 @@ class GuidanceSender:
                     "msg_type": "POSE",
                     "seq": self._seq,
                     "t_ms": _now_ms(),
-                    "lat": getattr(gps, "lat", None),
-                    "lon": getattr(gps, "lon", None),
-                    "alt_m": getattr(gps, "alt_m", None),
+                    "lat": _gps_value(gps, "lat", "gps_lat"),
+                    "lon": _gps_value(gps, "lon", "gps_lon"),
+                    "alt_m": _gps_value(gps, "alt_m", "gps_alt_m"),
                     "heading_deg": None,
                     "speed_mps": None,
-                    "gps_valid": getattr(gps, "fix", 0) >= 1,
+                    "gps_valid": _gps_value(gps, "fix", "gps_fix", 0) >= 1,
                     "sniffer_alive": sniffer_alive,
                     "battery_mv": None,
                 }
@@ -131,43 +163,73 @@ class GuidanceSender:
                 t_end = _now_ms()
 
                 rows = self._read_new_csv_rows(csv_reader_state)
-                rssi_values = [
-                    float(r["rssi_dbm"])
-                    for r in rows
-                    if r.get("rssi_dbm") and r["rssi_dbm"] != "" and r.get("frame_type") != "heartbeat"
-                ]
-
-                frames_total = len(rssi_values)
-                frames_strong = sum(
-                    1 for v in rssi_values if v > config.GUIDANCE_STRONG_RSSI_THRESHOLD_DBM
+                packet = self._build_evidence_packet(rows, t_start, t_end)
+                sent = self._post("/api/guidance/evidence", packet)
+                if sent:
+                    self._evidence_packets_sent += 1
+                logger.info(
+                    "evidence window rows=%s frames_total=%s frames_strong=%s "
+                    "lat=%s lon=%s sent=%s evidence_sent=%s packets_sent=%s last_error=%s",
+                    len(rows),
+                    packet["frames_total"],
+                    packet["frames_strong"],
+                    packet["lat"],
+                    packet["lon"],
+                    sent,
+                    self._evidence_packets_sent,
+                    self._packets_sent,
+                    self._last_error,
                 )
-
-                if rssi_values:
-                    rssi_max: Optional[float] = max(rssi_values)
-                    rssi_p95: Optional[float] = _percentile_95(rssi_values)
-                    rssi_mean: Optional[float] = sum(rssi_values) / len(rssi_values)
-                else:
-                    rssi_max = rssi_p95 = rssi_mean = None
-
-                gps = self._gps_state.get()
-                self._seq += 1
-                packet = {
-                    "msg_type": "EVIDENCE",
-                    "seq": self._seq,
-                    "t_start_ms": t_start,
-                    "t_end_ms": t_end,
-                    "win_ms": t_end - t_start,
-                    "lat": getattr(gps, "lat", None),
-                    "lon": getattr(gps, "lon", None),
-                    "frames_total": frames_total,
-                    "frames_strong": frames_strong,
-                    "rssi_max_dbm": rssi_max,
-                    "rssi_p95_dbm": rssi_p95,
-                    "rssi_mean_dbm": rssi_mean,
-                }
-                self._post("/api/guidance/evidence", packet)
             except Exception as e:
                 logger.error(f"_evidence_loop error: {e}")
+
+    def _build_evidence_packet(self, rows: list, t_start: int, t_end: int) -> dict:
+        rssi_values = []
+        for row in rows:
+            if row.get("frame_type") == "heartbeat":
+                continue
+            rssi = _to_float(row.get("rssi_dbm"))
+            if rssi is not None:
+                rssi_values.append(rssi)
+        self._evidence_rows_seen += len(rows)
+
+        frames_total = len(rssi_values)
+        frames_strong = sum(
+            1 for v in rssi_values if v > config.GUIDANCE_STRONG_RSSI_THRESHOLD_DBM
+        )
+
+        if rssi_values:
+            rssi_max: Optional[float] = max(rssi_values)
+            rssi_p95: Optional[float] = _percentile_95(rssi_values)
+            rssi_mean: Optional[float] = sum(rssi_values) / len(rssi_values)
+        else:
+            rssi_max = rssi_p95 = rssi_mean = None
+
+        gps = self._gps_state.get()
+        lat = _gps_value(gps, "lat", "gps_lat")
+        lon = _gps_value(gps, "lon", "gps_lon")
+        if lat is None:
+            lat = _latest_row_float(rows, "gps_lat")
+        if lon is None:
+            lon = _latest_row_float(rows, "gps_lon")
+
+        self._seq += 1
+        packet = {
+            "msg_type": "EVIDENCE",
+            "seq": self._seq,
+            "t_start_ms": t_start,
+            "t_end_ms": t_end,
+            "win_ms": t_end - t_start,
+            "dwell_ms": _dwell_ms(),
+            "lat": lat,
+            "lon": lon,
+            "frames_total": frames_total,
+            "frames_strong": frames_strong,
+            "rssi_max_dbm": rssi_max,
+            "rssi_p95_dbm": rssi_p95,
+            "rssi_mean_dbm": rssi_mean,
+        }
+        return packet
 
     def _health_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -186,7 +248,7 @@ class GuidanceSender:
                     "t_ms": _now_ms(),
                     "cpu_pct": cpu_pct,
                     "temp_c": temp_c,
-                    "gps_valid": getattr(gps, "fix", 0) >= 1,
+                    "gps_valid": _gps_value(gps, "fix", "gps_fix", 0) >= 1,
                     "sniffer_alive": sniffer_alive,
                     "uplink_queue_len": 0,
                     "dropped_msgs": self._dropped_msgs,
@@ -204,20 +266,28 @@ class GuidanceSender:
             resp = requests.post(url, json=data, timeout=config.GUIDANCE_HTTP_TIMEOUT_SEC)
             resp.raise_for_status()
             self._packets_sent += 1
+            self._last_error = None
             return True
         except Exception as e:
             self._last_error = str(e)
             self._dropped_msgs += 1
+            logger.warning(
+                "guidance post failed endpoint=%s packets_sent=%s dropped=%s last_error=%s",
+                endpoint,
+                self._packets_sent,
+                self._dropped_msgs,
+                self._last_error,
+            )
             return False
 
     def _read_new_csv_rows(self, state: dict) -> list:
-        """Read new rows appended to the most recently modified CSV in LOG_DIR.
+        """Read new rows appended to the most recently modified Wi-Fi scan CSV in LOG_DIR.
 
         Handles missing file, new file rotation, and encoding errors gracefully.
         Returns list of dicts, capped at GUIDANCE_EVIDENCE_LOOKBACK_ROWS.
         """
         try:
-            csv_files = list(config.LOG_DIR.glob("*.csv"))
+            csv_files = list(config.LOG_DIR.glob(f"{config.LOG_FILE_PREFIX}*.csv"))
             if not csv_files:
                 return []
 
@@ -231,31 +301,39 @@ class GuidanceSender:
                     except Exception:
                         pass
                 f = open(newest_path, newline="", encoding="utf-8", errors="replace")
-                f.seek(0, 2)  # seek to end; we only want new rows going forward
                 state["file"] = f
                 state["path"] = newest_path
-                return []
+                state["partial"] = ""
+                logger.info("guidance evidence following Wi-Fi CSV %s", newest_path)
 
             f = state["file"]
             if f is None:
                 return []
 
-            new_content = f.read()
+            new_content = state.get("partial", "") + f.read()
+            state["partial"] = ""
             if not new_content:
                 return []
 
-            # Split into lines; drop last partial line if file mid-write
+            # Split into lines; preserve the last partial line while the sniffer writes.
             lines = new_content.split("\n")
             complete_lines = lines[:-1] if not new_content.endswith("\n") else lines
+            if not new_content.endswith("\n"):
+                state["partial"] = lines[-1]
             complete_lines = [l for l in complete_lines if l.strip()]
             if not complete_lines:
                 return []
 
-            # Parse with csv.DictReader using the fieldnames from config
-            import io
             text_block = "\n".join(complete_lines)
-            reader = csv.DictReader(io.StringIO(text_block), fieldnames=config.FIELDNAMES)
-            rows = [row for row in reader]
+            first_fields = [field.strip() for field in complete_lines[0].split(",")]
+            if first_fields == config.FIELDNAMES:
+                reader = csv.DictReader(io.StringIO(text_block))
+            else:
+                reader = csv.DictReader(io.StringIO(text_block), fieldnames=config.FIELDNAMES)
+            rows = [
+                row for row in reader
+                if row.get("timestamp_utc") != "timestamp_utc" and row.get("frame_type")
+            ]
 
             # Cap to most recent N rows
             return rows[-config.GUIDANCE_EVIDENCE_LOOKBACK_ROWS:]

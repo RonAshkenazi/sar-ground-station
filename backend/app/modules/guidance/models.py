@@ -64,6 +64,15 @@ class HealthState:
 
 
 @dataclass
+class EvidenceDiagnostics:
+    last_evidence_ms: Optional[float] = None
+    last_evidence_drop_reason: Optional[str] = None
+    last_evidence_packet: Optional[dict] = None
+    evidence_packets_ingested: int = 0
+    evidence_packets_dropped: int = 0
+
+
+@dataclass
 class GuidanceGrid:
     bounds: dict
     cell_size_m: float
@@ -78,6 +87,7 @@ class GuidanceState:
     cell_states: dict[int, GridCellState] = field(default_factory=dict)
     drone: DroneState = field(default_factory=DroneState)
     health: HealthState = field(default_factory=HealthState)
+    evidence_diagnostics: EvidenceDiagnostics = field(default_factory=EvidenceDiagnostics)
     mode: str = "EXPLORE"
     previous_target_id: Optional[int] = None
     refine_start_ms: Optional[float] = None
