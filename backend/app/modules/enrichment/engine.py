@@ -8,8 +8,8 @@ from typing import Any
 from app.modules.enrichment.pcap_parser import parse_ble_pcap, parse_wifi_pcap
 
 
-_ENR_01_MATCH_THRESHOLD: float = 0.3  # TODO: TBD per spec Part B ENR-01 - extract from legacy app
-_ENR_02_TIME_WINDOW_MS: float = 500.0  # TODO: TBD per spec Part B ENR-02 - extract from legacy app
+_ENR_01_MATCH_THRESHOLD: float = 0.3  # FD-03: keep as new-backend heuristic; not legacy-equivalent
+_ENR_02_TIME_WINDOW_MS: float = 1000.0  # FD: legacy default; 500 was a stub
 _ENR_03_TIME_SCORE_WEIGHT: float = 1.0  # TODO: TBD per spec Part B ENR-03 - extract from legacy app
 _ENR_04_IDENTITY_SCORE_WEIGHT: float = 1.0  # TODO: TBD per spec Part B ENR-04 - extract from legacy app
 _ENR_05_WIFI_CONTEXT_WEIGHT: float = 0.5  # TODO: TBD per spec Part B ENR-05 - extract from legacy app

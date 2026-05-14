@@ -1,0 +1,1411 @@
+Below is a detailed **Smart Flight Guidance Specification** for your Ground Station refactor.
+
+You can paste this into something like:
+
+```text
+docs/specs/smart_flight_guidance.md
+```
+
+or use it as a prompt for the implementation agent.
+
+---
+
+# Smart Flight Guidance Specification
+
+## Ground Station Refactor — Pre-Localization Adaptive Scanning Layer
+
+## 1. Purpose
+
+The goal of this feature is to add a **Smart Flight Guidance** layer to the Ground Station.
+
+This feature helps the pilot scan the search area more intelligently during the **initial data collection phase**, before the heavy processing pipeline has enough data to run full calibration, enrichment, Re-ID, localization, or final heatmap generation.
+
+The feature should recommend where the scanning unit should fly next in near real time, using only lightweight streaming information received from the Raspberry Pi airborne unit.
+
+The guidance should help achieve three practical goals:
+
+1. Finish the scan faster than a fixed/lawnmower scan.
+2. Reduce uncertainty over the search area.
+3. Collect more useful samples around areas that appear to contain RF peaks / possible emitters.
+
+This feature is not intended to replace the existing localization system. It is an online data-acquisition optimization layer.
+
+---
+
+# 2. Critical System Boundary
+
+## 2.1 Existing Pipeline Remains Unchanged
+
+The following modules must remain unchanged:
+
+* Calibration
+* Enrichment
+* Re-ID
+* Localization
+* Final probabilistic heatmap generation
+* Result Analysis
+* Saved sessions / final artifact flow
+
+These modules may still run exactly as they currently do after sufficient data has been collected.
+
+## 2.2 New Feature Scope
+
+The new feature is only:
+
+```text
+Online Smart Flight Guidance
+```
+
+It operates during the live scan and answers:
+
+```text
+Where should the pilot fly next to collect more informative data?
+```
+
+It must not depend on final localization outputs.
+
+## 2.3 Important Correction
+
+The guidance layer must **not** assume access to:
+
+* Final localized emitter points
+* Re-ID clusters
+* Post-enrichment data
+* Final heatmaps
+* Full processed pipeline outputs
+
+Those outputs are not available during the first scan loop.
+
+The guidance layer can only use lightweight streaming data such as:
+
+* Current position
+* Time
+* Cell ID
+* RSSI summaries
+* Packet/frame counts
+* Dwell time per grid cell
+* Basic scan health
+
+---
+
+# 3. Architecture Overview
+
+## 3.1 Recommended Architecture
+
+The Ground Station should become the main active server and processing brain.
+
+The Raspberry Pi should behave as a lightweight airborne sensing client.
+
+```text
+Raspberry Pi Air Unit
+    |
+    | Wi-Fi link
+    v
+Ground Station Server
+    |
+    v
+Smart Flight Guidance Module
+    |
+    v
+Pilot UI: Map + Grid + Current Target Recommendation
+```
+
+## 3.2 Raspberry Pi Responsibilities
+
+The Pi should do only lightweight real-time work:
+
+* Passive Wi-Fi capture
+* GPS/pose tagging
+* Local raw data logging
+* Simple per-window aggregation
+* Send small guidance packets to Ground Station
+* Maintain local buffering if connection temporarily drops
+* Avoid expensive computation
+
+The Pi should not:
+
+* Run localization
+* Run Re-ID
+* Compute final heatmaps
+* Select the next target cell
+* Run active sensing optimization
+* Stream full CSV data in real time
+
+## 3.3 Ground Station Responsibilities
+
+The Ground Station should:
+
+* Maintain the search-area grid
+* Receive pose and evidence packets
+* Update per-cell live state
+* Compute guidance scores
+* Select the next recommended target cell
+* Display the recommendation to the pilot
+* Log online guidance history for later comparison
+* Allow smart-flight vs dumb-flight evaluation
+
+---
+
+# 4. Conceptual Flow
+
+## 4.1 Before Scan
+
+The user defines:
+
+* Search area boundary
+* Grid resolution
+* Flight mode:
+
+  * Dumb / fixed scan
+  * Smart guidance scan
+* Optional scan parameters:
+
+  * RSSI strong threshold
+  * Decision interval
+  * Grid cell size
+  * Weights for scoring function
+
+## 4.2 During Scan
+
+The Raspberry Pi sends lightweight packets:
+
+1. `PosePacket`
+2. `EvidencePacket`
+3. optional `HealthPacket`
+
+The Ground Station updates:
+
+* Current drone position
+* Covered cells
+* Evidence map
+* Uncertainty map
+* Peakness map
+* Recommended target cell
+
+The UI displays:
+
+* Current drone location
+* Grid overlay
+* Current target cell
+* Direction and distance to target
+* Explore/Refine mode
+* Optional score explanation
+
+## 4.3 After Scan
+
+The existing pipeline continues as usual:
+
+```text
+Raw Scan Data → Calibration → Enrichment → Re-ID → Localization → Result Analysis
+```
+
+The guidance feature adds a separate log:
+
+```text
+guidance_history.json / csv
+```
+
+This enables comparison between smart and dumb flight.
+
+---
+
+# 5. Data Model
+
+## 5.1 Grid
+
+The search area is divided into grid cells.
+
+Each cell has:
+
+```ts
+GridCell {
+  cell_id: number;
+  center_lat: number;
+  center_lon: number;
+  polygon?: GeoJSONPolygon;
+
+  evidence_score: number;      // E_i
+  uncertainty_score: number;   // U_i
+  peak_score: number;          // P_i
+  coverage_score: number;      // V_i
+  age_score: number;           // A_i
+  travel_cost: number;         // D_i
+  oscillation_penalty: number; // R_i
+  final_score: number;         // J_i
+
+  last_seen_ts?: number;
+  last_updated_ts?: number;
+  total_dwell_ms: number;
+  total_frames: number;
+  total_strong_frames: number;
+
+  rssi_max?: number;
+  rssi_p95?: number;
+  rssi_mean?: number;
+}
+```
+
+---
+
+# 6. Required Live Packets
+
+## 6.1 PosePacket — Required
+
+The Pi sends this at around **2 Hz**.
+
+Purpose:
+
+* Update drone location on map
+* Update coverage
+* Compute travel cost
+* Know if GPS/scan is valid
+
+Recommended schema:
+
+```ts
+PosePacketV1 {
+  msg_type: "POSE";
+  seq: number;
+  t_ms: number;
+
+  lat: number;
+  lon: number;
+  alt_m?: number;
+
+  speed_mps?: number;
+  heading_deg?: number;
+
+  gps_valid: boolean;
+  sniffer_alive: boolean;
+  link_ok: boolean;
+
+  battery_mv?: number;
+}
+```
+
+Minimum fields:
+
+```ts
+{
+  msg_type,
+  seq,
+  t_ms,
+  lat,
+  lon,
+  gps_valid
+}
+```
+
+Recommended fields:
+
+```ts
+{
+  msg_type,
+  seq,
+  t_ms,
+  lat,
+  lon,
+  alt_m,
+  speed_mps,
+  heading_deg,
+  gps_valid,
+  sniffer_alive,
+  battery_mv
+}
+```
+
+---
+
+## 6.2 EvidencePacket — Required
+
+The Pi sends this every **1–2 seconds**.
+
+This packet contains lightweight summary information from a short time window.
+
+It should not contain raw packets.
+
+Recommended schema:
+
+```ts
+EvidencePacketV1 {
+  msg_type: "EVIDENCE";
+  seq: number;
+
+  t_start_ms: number;
+  t_end_ms: number;
+  win_ms: number;
+
+  records: CellEvidenceRecord[];
+}
+```
+
+Each record:
+
+```ts
+CellEvidenceRecord {
+  cell_id: number;
+
+  dwell_ms: number;
+
+  frames_total: number;
+  frames_strong: number;
+
+  rssi_max_dbm: number;
+  rssi_p95_dbm: number;
+  rssi_mean_dbm?: number;
+}
+```
+
+Minimum useful record:
+
+```ts
+{
+  cell_id,
+  dwell_ms,
+  frames_total,
+  frames_strong,
+  rssi_max_dbm,
+  rssi_p95_dbm
+}
+```
+
+Optional:
+
+```ts
+rssi_mean_dbm
+```
+
+## Why These Fields Are Needed
+
+| Field           | Why it matters                                        |
+| --------------- | ----------------------------------------------------- |
+| `cell_id`       | Maps evidence directly to grid                        |
+| `dwell_ms`      | Updates coverage                                      |
+| `frames_total`  | Measures packet density                               |
+| `frames_strong` | Detects useful high-signal regions                    |
+| `rssi_max_dbm`  | Captures possible strong peak events                  |
+| `rssi_p95_dbm`  | More stable than max, better than mean                |
+| `rssi_mean_dbm` | Helps distinguish weak-dense vs strong-sparse regions |
+
+---
+
+## 6.3 HealthPacket — Optional
+
+Sent every 5–10 seconds.
+
+```ts
+HealthPacketV1 {
+  msg_type: "HEALTH";
+  seq: number;
+  t_ms: number;
+
+  cpu_pct?: number;
+  temp_c?: number;
+  uplink_queue_len?: number;
+  dropped_msgs?: number;
+
+  gps_valid: boolean;
+  sniffer_alive: boolean;
+  storage_ok?: boolean;
+}
+```
+
+Purpose:
+
+* Detect Pi overload
+* Detect stale data
+* Avoid trusting guidance when the system is unhealthy
+
+---
+
+# 7. What Must Not Be Sent Live
+
+Do not send the following during the live guidance loop:
+
+* Full CSV
+* Full PCAP
+* Every raw frame
+* Full MAC list
+* Full Radiotap records
+* Full frame body
+* Re-ID features
+* Enrichment features
+* Heavy JSON arrays without bounds
+
+These should stay local on the Pi and be processed later by the existing pipeline.
+
+---
+
+# 8. Ground Station Live State
+
+The Ground Station maintains a live state per cell.
+
+For each grid cell (i):
+
+[
+s_i = (E_i, U_i, P_i, V_i, A_i, D_i, R_i, J_i)
+]
+
+Where:
+
+| Symbol | Meaning                     |
+| ------ | --------------------------- |
+| (E_i)  | Evidence score              |
+| (U_i)  | Operational uncertainty     |
+| (P_i)  | Peakness / local contrast   |
+| (V_i)  | Coverage / visit score      |
+| (A_i)  | Age / staleness             |
+| (D_i)  | Travel cost                 |
+| (R_i)  | Oscillation/revisit penalty |
+| (J_i)  | Final decision score        |
+
+---
+
+# 9. Parameter Calculations
+
+## 9.1 Evidence Score (E_i)
+
+Evidence measures how interesting the cell appears from raw streaming observations.
+
+It is based on:
+
+* RSSI strength
+* Number of frames
+* Number of strong frames
+
+### RSSI Normalization
+
+Use a fixed range:
+
+```text
+RSSI_MIN = -90 dBm
+RSSI_MAX = -55 dBm
+```
+
+Normalize:
+
+[
+norm(rssi) = clip\left(\frac{rssi - RSSI_{MIN}}{RSSI_{MAX} - RSSI_{MIN}}, 0, 1\right)
+]
+
+Example:
+
+| RSSI    | Normalized |
+| ------- | ---------- |
+| -90 dBm | 0          |
+| -80 dBm | 0.286      |
+| -70 dBm | 0.571      |
+| -60 dBm | 0.857      |
+| -55 dBm | 1          |
+
+### Count Score
+
+[
+f_{count}(i)=\frac{\log(1+n_i)}{\log(1+n_{ref})}
+]
+
+Where:
+
+* (n_i) = `frames_total`
+* (n_{ref}) = expected useful frame count per window
+
+Suggested:
+
+```text
+n_ref = 30
+```
+
+Clamp to [0,1].
+
+### Strong Count Score
+
+[
+f_{strong}(i)=\frac{\log(1+n_i^{strong})}{\log(1+n_{strong_ref})}
+]
+
+Suggested:
+
+```text
+n_strong_ref = 10
+```
+
+### RSSI Score
+
+[
+f_{rssi}(i)=0.6 \cdot norm(rssi_{p95}) + 0.4 \cdot norm(rssi_{max})
+]
+
+### Raw Evidence
+
+[
+E_i^{raw}=0.5f_{rssi}+0.3f_{strong}+0.2f_{count}
+]
+
+### Time Smoothing
+
+Use exponential moving average:
+
+[
+E_i \leftarrow (1-\beta_E)E_i+\beta_EE_i^{raw}
+]
+
+Suggested:
+
+```text
+beta_E = 0.3
+```
+
+This prevents a single RSSI spike from dominating the guidance.
+
+---
+
+## 9.2 Coverage Score (V_i)
+
+Coverage measures how much the system has actually sampled a cell.
+
+[
+V_i \leftarrow min\left(1, V_i + \frac{dwell_i}{T_{cov}}\right)
+]
+
+Where:
+
+* `dwell_i` = `dwell_ms`
+* (T_{cov}) = required dwell time to consider a cell sufficiently covered
+
+Suggested:
+
+```text
+T_cov = 5000 ms
+```
+
+Interpretation:
+
+| (V_i) | Meaning              |
+| ----- | -------------------- |
+| 0     | Not covered          |
+| 0.5   | Partially covered    |
+| 1     | Sufficiently covered |
+
+---
+
+## 9.3 Age / Staleness Score (A_i)
+
+Age measures how stale the information is.
+
+If a cell was updated in the current window:
+
+[
+A_i = 0
+]
+
+Otherwise:
+
+[
+A_i \leftarrow min\left(1, A_i + \frac{\Delta T}{T_{age}}\right)
+]
+
+Suggested:
+
+```text
+T_age = 30000 ms
+```
+
+Interpretation:
+
+| (A_i) | Meaning          |
+| ----- | ---------------- |
+| 0     | Recently updated |
+| 1     | Very stale       |
+
+---
+
+## 9.4 Uncertainty Score (U_i)
+
+This is not final probabilistic uncertainty.
+
+This is **operational scan uncertainty**.
+
+It measures how much the cell still needs useful sampling.
+
+[
+U_i = 0.6(1 - V_i) + 0.4A_i
+]
+
+Interpretation:
+
+| Condition             | (U_i)       |
+| --------------------- | ----------- |
+| Never visited         | High        |
+| Recently well sampled | Low         |
+| Visited long ago      | Medium/high |
+| Partially sampled     | Medium      |
+
+---
+
+## 9.5 Peakness Score (P_i)
+
+Peakness measures whether a cell is locally stronger than its neighbors.
+
+[
+P_i = max\left(0, E_i - mean(E_j), j \in \mathcal{N}(i)\right)
+]
+
+Where (\mathcal{N}(i)) is the 4-neighbor or 8-neighbor set.
+
+Recommended:
+
+```text
+Use 8-neighbor local contrast.
+```
+
+Interpretation:
+
+| Case                                           | (P_i) |
+| ---------------------------------------------- | ----- |
+| Whole region has similar evidence              | Low   |
+| One cell is clearly stronger than nearby cells | High  |
+| Cell has no evidence                           | Low   |
+
+---
+
+## 9.6 Travel Cost (D_i)
+
+Travel cost prevents inefficient target jumps.
+
+Distance component:
+
+[
+d_i = \frac{distance(current_position, cell_center_i)}{d_{max}}
+]
+
+Heading component:
+
+[
+h_i = \frac{|\Delta\theta_i|}{180}
+]
+
+Combined:
+
+[
+D_i = 0.75d_i + 0.25h_i
+]
+
+If heading is unreliable:
+
+[
+D_i = d_i
+]
+
+---
+
+## 9.7 Oscillation Penalty (R_i)
+
+This prevents the target from changing too frequently.
+
+Simple version:
+
+[
+R_i =
+\begin{cases}
+0, & i = previous_target \
+1, & i \neq previous_target
+\end{cases}
+]
+
+Better version:
+
+[
+R_i = 0.5\cdot \mathbb{1}[i \neq previous_target] + 0.5\cdot \mathbb{1}[i \notin neighborhood(previous_target)]
+]
+
+Interpretation:
+
+* Small penalty for changing target
+* Larger penalty for jumping far away
+
+---
+
+# 10. Final Decision Score
+
+## 10.1 MVP Single-Mode Formula
+
+Use:
+
+[
+J_i = 0.35E_i + 0.30U_i + 0.20P_i - 0.15D_i - 0.05R_i
+]
+
+Meaning:
+
+| Term  | Weight | Purpose                         |
+| ----- | -----: | ------------------------------- |
+| (E_i) |   0.35 | Go where raw evidence is useful |
+| (U_i) |   0.30 | Cover uncertain areas           |
+| (P_i) |   0.20 | Refine local peaks              |
+| (D_i) |  -0.15 | Avoid wasteful travel           |
+| (R_i) |  -0.05 | Avoid unstable guidance         |
+
+The selected target is:
+
+[
+i^* = \arg\max_i J_i
+]
+
+---
+
+# 11. Explore / Refine Modes
+
+After MVP, add explicit modes.
+
+## 11.1 Explore Mode
+
+Used when the system needs broad coverage.
+
+[
+J_i^{explore}=0.20E_i + 0.50U_i + 0.10P_i - 0.15D_i - 0.05R_i
+]
+
+Explore prioritizes:
+
+* Unvisited cells
+* Stale cells
+* General area coverage
+
+## 11.2 Refine Mode
+
+Used when a likely peak region appears.
+
+[
+J_i^{refine}=0.45E_i + 0.15U_i + 0.30P_i - 0.07D_i - 0.03R_i
+]
+
+Refine prioritizes:
+
+* Cells near strong evidence
+* Local contrast
+* More samples near suspected peaks
+
+## 11.3 Enter Refine Mode
+
+Enter Refine if a cell (k) satisfies:
+
+```text
+E_k > theta_E
+P_k > theta_P
+peak persists for M consecutive windows
+```
+
+Suggested defaults:
+
+```text
+theta_E = 0.65
+theta_P = 0.20
+M = 2 or 3 windows
+```
+
+## 11.4 Exit Refine Mode
+
+Exit Refine if:
+
+```text
+peak disappears
+OR local region is sufficiently covered
+OR max refine duration exceeded
+OR another peak becomes significantly stronger
+```
+
+Suggested:
+
+```text
+max_refine_duration = 20–30 seconds
+```
+
+---
+
+# 12. Guidance Recommendation Output
+
+The backend should produce a clear recommendation object:
+
+```ts
+GuidanceRecommendation {
+  timestamp_ms: number;
+
+  mode: "EXPLORE" | "REFINE";
+
+  target_cell_id: number;
+  target_lat: number;
+  target_lon: number;
+
+  bearing_deg: number;
+  distance_m: number;
+
+  final_score: number;
+
+  explanation: {
+    evidence_score: number;
+    uncertainty_score: number;
+    peak_score: number;
+    travel_cost: number;
+    oscillation_penalty: number;
+  };
+
+  validity: {
+    gps_valid: boolean;
+    data_fresh: boolean;
+    recommendation_stale: boolean;
+  };
+}
+```
+
+The UI should show:
+
+```text
+MODE: EXPLORE
+TARGET: Cell 143
+DIRECTION: 260m NE
+REASON: High uncertainty + low coverage
+```
+
+or:
+
+```text
+MODE: REFINE
+TARGET: Cell 211
+DIRECTION: 120m E
+REASON: Strong local RF peak
+```
+
+---
+
+# 13. Backend Module Design
+
+Recommended module name:
+
+```text
+backend/app/guidance/
+```
+
+Suggested files:
+
+```text
+backend/app/guidance/
+  __init__.py
+  models.py
+  grid.py
+  state.py
+  scoring.py
+  recommendation.py
+  packet_handlers.py
+  schemas.py
+  config.py
+```
+
+## 13.1 `models.py`
+
+Contains internal data structures:
+
+```py
+GridCellState
+GuidanceState
+PoseObservation
+EvidenceObservation
+GuidanceRecommendation
+```
+
+## 13.2 `grid.py`
+
+Responsible for:
+
+* Creating grid from search boundary
+* Mapping lat/lon to cell ID
+* Getting cell center
+* Getting cell neighbors
+* Computing distance to cell
+
+## 13.3 `state.py`
+
+Responsible for:
+
+* Updating coverage
+* Updating age
+* Updating evidence
+* Maintaining last target
+* Maintaining mode
+
+## 13.4 `scoring.py`
+
+Responsible for:
+
+* Computing (E_i)
+* Computing (U_i)
+* Computing (P_i)
+* Computing (D_i)
+* Computing (R_i)
+* Computing final (J_i)
+
+## 13.5 `recommendation.py`
+
+Responsible for:
+
+* Selecting target cell
+* Switching Explore/Refine modes
+* Building recommendation object
+* Avoiding stale recommendations
+
+## 13.6 `packet_handlers.py`
+
+Responsible for:
+
+* Handling PosePacket
+* Handling EvidencePacket
+* Handling HealthPacket
+* Updating guidance state
+
+---
+
+# 14. Backend API
+
+## 14.1 Receive Pose
+
+```http
+POST /api/guidance/pose
+```
+
+Body:
+
+```json
+{
+  "seq": 1024,
+  "t_ms": 1710000000000,
+  "lat": 31.262,
+  "lon": 34.801,
+  "alt_m": 40,
+  "speed_mps": 5.2,
+  "heading_deg": 82,
+  "gps_valid": true,
+  "sniffer_alive": true,
+  "battery_mv": 5100
+}
+```
+
+## 14.2 Receive Evidence
+
+```http
+POST /api/guidance/evidence
+```
+
+Body:
+
+```json
+{
+  "seq": 2048,
+  "t_start_ms": 1710000000000,
+  "t_end_ms": 1710000002000,
+  "win_ms": 2000,
+  "records": [
+    {
+      "cell_id": 143,
+      "dwell_ms": 1200,
+      "frames_total": 18,
+      "frames_strong": 4,
+      "rssi_max_dbm": -58,
+      "rssi_p95_dbm": -63,
+      "rssi_mean_dbm": -72
+    }
+  ]
+}
+```
+
+## 14.3 Get Current Recommendation
+
+```http
+GET /api/guidance/recommendation
+```
+
+Response:
+
+```json
+{
+  "timestamp_ms": 1710000003000,
+  "mode": "REFINE",
+  "target_cell_id": 143,
+  "target_lat": 31.26231,
+  "target_lon": 34.80141,
+  "bearing_deg": 72,
+  "distance_m": 118,
+  "final_score": 0.78,
+  "explanation": {
+    "evidence_score": 0.82,
+    "uncertainty_score": 0.44,
+    "peak_score": 0.31,
+    "travel_cost": 0.18,
+    "oscillation_penalty": 0.0
+  },
+  "validity": {
+    "gps_valid": true,
+    "data_fresh": true,
+    "recommendation_stale": false
+  }
+}
+```
+
+## 14.4 Get Guidance Grid State
+
+```http
+GET /api/guidance/grid
+```
+
+Returns per-cell values for visualization.
+
+```json
+{
+  "cells": [
+    {
+      "cell_id": 143,
+      "evidence_score": 0.82,
+      "uncertainty_score": 0.44,
+      "peak_score": 0.31,
+      "coverage_score": 0.65,
+      "age_score": 0.2,
+      "final_score": 0.78
+    }
+  ]
+}
+```
+
+---
+
+# 15. Frontend UI Requirements
+
+The frontend should add a guidance panel to the live mission / map page.
+
+## 15.1 Required Map Layers
+
+* Base map
+* Search boundary
+* Grid overlay
+* Drone current location
+* Current target cell
+* Optional evidence heatmap
+* Optional uncertainty heatmap
+
+## 15.2 Required UI Elements
+
+Display:
+
+```text
+Current Mode: EXPLORE / REFINE
+Target Cell: ID
+Distance: meters
+Bearing: degrees / compass direction
+Reason: short explanation
+Data Status: Fresh / Stale / GPS Invalid
+```
+
+## 15.3 Recommended Visual Encoding
+
+* Current drone: clear marker
+* Target cell: highlighted cell
+* Direction: arrow from drone to target
+* Explore mode: show uncertainty/coverage overlay
+* Refine mode: show evidence/peak overlay
+
+## 15.4 Avoid Overload
+
+Do not show too many values to the pilot.
+
+The pilot should mainly see:
+
+```text
+Where am I?
+Where should I go?
+Why?
+Is the recommendation reliable?
+```
+
+---
+
+# 16. Logging
+
+The Ground Station should log every recommendation.
+
+Suggested file:
+
+```text
+TEMP/guidance/guidance_history.csv
+```
+
+Columns:
+
+```text
+timestamp_ms
+mode
+target_cell_id
+target_lat
+target_lon
+drone_lat
+drone_lon
+bearing_deg
+distance_m
+final_score
+evidence_score
+uncertainty_score
+peak_score
+travel_cost
+oscillation_penalty
+gps_valid
+data_fresh
+```
+
+Also store periodic grid snapshots:
+
+```text
+TEMP/guidance/grid_snapshots/
+```
+
+This is critical for comparing smart flight vs dumb flight.
+
+---
+
+# 17. Evaluation Plan
+
+## 17.1 Baselines
+
+Compare:
+
+1. Fixed lawnmower scan
+2. Fixed scan + manual revisit
+3. Smart guidance scan
+
+## 17.2 Metrics
+
+Primary:
+
+* Mission time to sufficient coverage
+* Time to first strong peak
+* Final localization error after regular pipeline
+* Number of useful samples near final emitter/GT
+* Average uncertainty reduction rate
+
+Secondary:
+
+* Bytes transmitted live
+* Pi CPU/memory stability
+* Number of target switches per minute
+* Operator usability
+
+## 17.3 Core Evaluation Logic
+
+The final offline pipeline stays the same.
+
+Only the scan path changes.
+
+Therefore:
+
+```text
+Same pipeline + different flight strategy = measurable value of guidance layer
+```
+
+---
+
+# 18. Implementation Phases
+
+## Phase 1 — Ground Guidance Skeleton
+
+Implement:
+
+* Search area grid
+* Cell state model
+* Pose ingestion
+* Coverage map
+* Basic target recommendation using uncertainty only
+
+Formula:
+
+[
+J_i = U_i - 0.2D_i
+]
+
+Goal:
+
+```text
+The system can recommend unexplored nearby cells.
+```
+
+## Phase 2 — Evidence Integration
+
+Add:
+
+* EvidencePacket ingestion
+* Evidence score (E_i)
+* Peak score (P_i)
+* MVP scoring formula
+
+Formula:
+
+[
+J_i = 0.35E_i + 0.30U_i + 0.20P_i - 0.15D_i - 0.05R_i
+]
+
+Goal:
+
+```text
+The system can recommend both unexplored cells and promising RF regions.
+```
+
+## Phase 3 — Explore/Refine Modes
+
+Add:
+
+* Mode switching
+* Refine local peak behavior
+* Hysteresis
+* UI mode labels
+
+Goal:
+
+```text
+The system changes behavior depending on whether it is exploring or refining.
+```
+
+## Phase 4 — Experiment Logging
+
+Add:
+
+* Guidance history
+* Grid snapshots
+* Comparison metrics
+* Exportable reports
+
+Goal:
+
+```text
+The project can prove smart flight improves data acquisition.
+```
+
+---
+
+# 19. Acceptance Criteria
+
+## Backend
+
+The feature is acceptable if:
+
+* The Ground Station can create a grid from a predefined search area.
+* The Ground Station can ingest PosePacket and EvidencePacket.
+* Each cell maintains evidence, coverage, uncertainty, peakness, and final score.
+* The system computes a target cell every 3–5 seconds.
+* The system avoids rapid target oscillation.
+* The system handles stale GPS or stale evidence safely.
+* The system logs recommendation history.
+
+## Frontend
+
+The UI is acceptable if:
+
+* The pilot sees the drone location.
+* The pilot sees the current target cell.
+* The pilot sees direction and distance to the target.
+* The pilot sees Explore/Refine mode.
+* The pilot sees whether the recommendation is stale or valid.
+
+## Pi-side
+
+The Pi-side behavior is acceptable if:
+
+* It does not stream raw CSV live.
+* It does not send full PCAP live.
+* It sends bounded-size messages.
+* It can survive bursty packet environments.
+* It keeps local raw logs for the existing pipeline.
+
+---
+
+# 20. Implementation Notes for AI Coding Agent
+
+## Must Follow
+
+* Do not modify calibration.
+* Do not modify enrichment.
+* Do not modify Re-ID.
+* Do not modify localization.
+* Do not require final heatmap output for live guidance.
+* Do not assume the full scan data has already arrived.
+* Do not implement heavy processing on the Pi.
+* Do not stream unbounded packet lists.
+
+## New Code Should Be Isolated
+
+The guidance feature should be implemented as a separate module.
+
+Preferred naming:
+
+```text
+guidance
+smart_guidance
+flight_guidance
+live_guidance
+```
+
+Avoid mixing it into localization or Re-ID modules.
+
+## Source of Truth
+
+This guidance layer is a **pre-localization online adaptive scanning feature**.
+
+It helps collect better data.
+
+It does not replace the final data-processing pipeline.
+
+---
+
+# 21. Final Recommended Design
+
+Use this as the actual MVP design:
+
+## Pi Sends
+
+1. `PosePacketV1` at 2Hz
+2. `EvidencePacketV1` every 1–2 seconds
+3. Optional `HealthPacketV1` every 5–10 seconds
+
+## Ground Station Computes
+
+For each grid cell:
+
+```text
+E_i = evidence score
+V_i = coverage score
+A_i = staleness score
+U_i = operational uncertainty
+P_i = local peakness
+D_i = travel cost
+R_i = oscillation penalty
+J_i = final action score
+```
+
+## MVP Score
+
+[
+J_i = 0.35E_i + 0.30U_i + 0.20P_i - 0.15D_i - 0.05R_i
+]
+
+## Output to Pilot
+
+```text
+Mode: EXPLORE / REFINE
+Target cell
+Bearing
+Distance
+Simple reason
+Validity status
+```
+
+## Core Principle
+
+```text
+The guidance layer does not know where the emitter is.
+It only estimates where the next measurements are likely to be most useful.
+```
+
+That is the correct framing for the feature.

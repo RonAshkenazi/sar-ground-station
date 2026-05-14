@@ -1,0 +1,82 @@
+Please update the Result Analysis implementation plan with the following corrections and requirements.
+
+I confirm `delta_min = 0.5` as the initial default value for ambiguity detection, but it must not be hard-coded. Expose it as a configurable evaluation parameter and log it in every evaluation output.
+
+Important correction: the current uncertainty radii displayed by the system are not reliable yet. They are currently wrong / not properly calibrated, so do not design the Result Analysis logic as if the current radius values are already correct. The module may use them as input for now, but all radius-related thresholds and scoring logic must remain configurable and inspectable.
+
+Also, I requested to change the localization grid resolution from **5 meters to 2 meters**. Please update the implementation accordingly.
+
+This means:
+
+* `grid_resolution_m` should be set to `2`.
+* Any previous assumption based on a 5m grid resolution should be removed or updated.
+* Do not hard-code `R_min = 5m`.
+* `R_min` must be configurable.
+* A reasonable initial default after the resolution change is `R_min = 2m` or `3m`, but it must remain tunable after experiments.
+* If a minimum gate is needed, use something like:
+
+```python
+grid_resolution_m = 2.0
+R_min_default = 3.0
+```
+
+or:
+
+```python
+R_min = max(grid_resolution_m, configurable_min_gate)
+```
+
+The first implementation of Result Analysis should prioritize correctness, transparency, and debugging ability rather than hiding problems behind a single score.
+
+Please implement / design the module so that it exposes diagnostics for each matched cluster-GT pair:
+
+* predicted cluster center
+* matched GT point
+* distance to GT
+* current uncertainty radius
+* covered = distance <= radius
+* association cost
+* primary match
+* secondary candidates
+* clear_match / ambiguous_match status
+* duplicate / possible over-split status
+* possible merge / under-split status
+
+The matching logic should still follow the reference design:
+
+1. Convert lat/lon to local meter coordinates.
+2. Compute pairwise distances between clusters and GT points.
+3. Apply a configurable matching gate.
+4. Compute normalized association cost.
+5. Run global one-to-one Hungarian matching for primary matches.
+6. Keep secondary candidate associations for ambiguity analysis.
+7. Classify matches as `clear_match` or `ambiguous_match`.
+8. Mark unmatched clusters as false positives.
+9. Mark unmatched GTs as false negatives.
+10. Detect possible over-split and under-split cases.
+
+The important conceptual separation is:
+
+* Localization uncertainty radius answers: “Where is this predicted cluster/emitter likely located?”
+* Association ambiguity answers: “Which cluster corresponds to this GT point?”
+* Re-ID split/merge diagnostics answer: “Did the system split one real emitter into multiple clusters, or merge multiple real emitters into one cluster?”
+
+Do not inflate the localization radius just because two clusters are similarly close to the same GT. Instead, represent that as association ambiguity and/or possible duplicate/over-split.
+
+For score aggregation, keep the four score components, but make the normalization parameters configurable:
+
+* containment / coverage score
+* distance score
+* count score
+* radius / sharpness score
+
+Also, `R_normalize = 50m` seems too forgiving for our project target. Since our target localization accuracy is around 5–10 meters, use a configurable value and start with something closer to `10m` or `20m`, not a fixed 50m.
+
+In short:
+
+* Confirm `delta_min = 0.5` as default only.
+* Change grid resolution to `2m`.
+* Do not hard-code `R_min = 5m`.
+* Treat current uncertainty radii as unreliable and needing future correction.
+* Keep all radius/gating/normalization parameters configurable.
+* Expose detailed diagnostics so we can understand whether errors come from localization, radius calibration, Re-ID split/merge, or GT association.

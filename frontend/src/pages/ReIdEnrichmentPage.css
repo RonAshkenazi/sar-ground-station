@@ -21,7 +21,8 @@
 
 .status-panel,
 .artifact-panel,
-.quality-panel {
+.quality-panel,
+.settings-panel {
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-surface);
@@ -63,6 +64,33 @@
 .quality-grid dd {
   margin: 0;
   font-weight: 650;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.settings-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.settings-grid select {
+  min-height: 34px;
+}
+
+.settings-toggle {
+  justify-content: end;
+}
+
+.settings-toggle input {
+  align-self: flex-start;
 }
 
 .btn-secondary {

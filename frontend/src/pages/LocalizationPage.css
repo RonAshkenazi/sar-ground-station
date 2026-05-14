@@ -89,6 +89,65 @@
   font-size: 0.875rem;
 }
 
+.settings-panel {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--color-surface);
+}
+
+.settings-toggle-button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font-weight: 700;
+  padding: 0;
+  text-align: left;
+}
+
+.localization-settings-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.loc-param-row {
+  align-items: center;
+  display: flex;
+  font-size: 0.875rem;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.loc-param-row input[type='number'] {
+  text-align: right;
+  width: 80px;
+}
+
+.map-toggles {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 1000;
+  display: flex;
+  gap: 1.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: rgba(20, 20, 20, 0.82);
+  color: rgba(255, 255, 255, 0.92);
+  padding: 8px 10px;
+  font-size: 0.85rem;
+}
+
+.map-toggles label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+}
+
 .cluster-summary {
   border: 1px solid var(--color-border);
   border-radius: 8px;
@@ -151,6 +210,35 @@
 
 .cluster-row-hidden {
   opacity: 0.45;
+}
+
+.conf-badge {
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 1px 5px;
+  text-transform: uppercase;
+}
+
+.conf-high {
+  background: #166534;
+  color: #bbf7d0;
+}
+
+.conf-medium {
+  background: #854d0e;
+  color: #fef9c3;
+}
+
+.conf-low {
+  background: #7f1d1d;
+  color: #fecaca;
+}
+
+.conf-static {
+  background: #1e3a5f;
+  color: #bfdbfe;
 }
 
 .mono {

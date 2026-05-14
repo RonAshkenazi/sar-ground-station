@@ -23,26 +23,6 @@ def test_health_endpoint_returns_ok() -> None:
     assert response.json() == {"status": "ok"}
 
 
-@pytest.mark.parametrize(
-    ("method", "path"),
-    [
-        ("get", "/api/sessions/session-1/result-analysis"),
-        ("post", "/api/sessions/session-1/result-analysis/ground-truth"),
-        ("delete", "/api/sessions/session-1/result-analysis/ground-truth"),
-        ("post", "/api/sessions/session-1/result-analysis/rerun"),
-    ],
-)
-def test_stub_endpoints_return_not_implemented(method: str, path: str) -> None:
-    client = TestClient(create_app())
-
-    response = getattr(client, method)(path)
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "not_implemented"
-    assert body["endpoint"] == path
-
-
 def test_scan_record_requires_src_mac() -> None:
     with pytest.raises(ValidationError):
         ScanRecord(
@@ -700,6 +680,83 @@ def _write_test_pcap(path, src_mac: str, dst_mac: str, timestamp: float) -> None
         file.write(payload)
 
 
+def test_pcap_parser_ie_fingerprint_uses_legacy_hex_format() -> None:
+    from app.modules.enrichment.pcap_parser import _parse_information_elements
+
+    data = (
+        bytes([1, 2]) + bytes.fromhex("aabb")
+        + bytes([50, 2]) + bytes.fromhex("ccdd")
+        + bytes([3, 1]) + bytes.fromhex("99")
+        + bytes([221, 3]) + bytes.fromhex("001122")
+    )
+
+    result = _parse_information_elements(data)
+
+    assert result["ie_ids"] == "1,50,3,221"
+    assert result["ie_fingerprint"] == "1:aabb;50:ccdd;221:001122"
+    assert "|" not in result["ie_fingerprint"]
+    assert "3:99" not in result["ie_fingerprint"]
+
+
+def test_radiotap_linktype_handled(tmp_path) -> None:
+    def mac_bytes(mac: str) -> bytes:
+        return bytes(int(part, 16) for part in mac.split(":"))
+
+    pcap_file = tmp_path / "radiotap.pcap"
+    radiotap_header = bytes([0, 0]) + struct.pack("<H", 36) + bytes(32)
+    frame_control = (0b00 << 2) | (8 << 4)
+    dot11 = (
+        frame_control.to_bytes(2, "little")
+        + b"\x00\x00"
+        + mac_bytes("ff:ff:ff:ff:ff:ff")
+        + mac_bytes("20:b0:01:36:65:77")
+        + mac_bytes("20:b0:01:36:65:77")
+        + b"\x10\x00"
+        + bytes(12)
+        + bytes([1, 2])
+        + bytes.fromhex("aabb")
+    )
+    payload = radiotap_header + dot11
+    with pcap_file.open("wb") as file:
+        file.write(struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 127))
+        file.write(struct.pack("<IIII", 1767225600, 0, len(payload), len(payload)))
+        file.write(payload)
+
+    from app.modules.enrichment.pcap_parser import parse_wifi_pcap
+
+    frames = parse_wifi_pcap(pcap_file)
+
+    assert len(frames) == 1
+    assert frames[0]["src_mac"] == "20:b0:01:36:65:77"
+    assert frames[0]["dst_mac"] == "ff:ff:ff:ff:ff:ff"
+    assert frames[0]["ie_fingerprint"] == "1:aabb"
+
+
+def test_beacon_ie_offset() -> None:
+    def mac_bytes(mac: str) -> bytes:
+        return bytes(int(part, 16) for part in mac.split(":"))
+
+    frame_control = (0b00 << 2) | (8 << 4)
+    payload = (
+        frame_control.to_bytes(2, "little")
+        + b"\x00\x00"
+        + mac_bytes("ff:ff:ff:ff:ff:ff")
+        + mac_bytes("20:b0:01:36:65:77")
+        + mac_bytes("20:b0:01:36:65:77")
+        + b"\x10\x00"
+        + bytes(12)
+        + bytes([1, 2])
+        + bytes.fromhex("aabb")
+    )
+
+    from app.modules.enrichment.pcap_parser import LINKTYPE_IEEE802_11, _parse_payload
+
+    frame = _parse_payload(payload, LINKTYPE_IEEE802_11)
+
+    assert frame["ie_ids"] == "1"
+    assert frame["ie_fingerprint"] == "1:aabb"
+
+
 def test_enrichment_engine_wifi_match(tmp_path) -> None:
     csv_file = tmp_path / "scan.csv"
     csv_file.write_text(
@@ -902,7 +959,7 @@ def test_reid_engine_static_bypass(tmp_path) -> None:
     assert "00:11:22:33:44:55" in output
 
 
-def test_reid_engine_dynamic_singleton(tmp_path) -> None:
+def test_singleton_becomes_noise_cluster(tmp_path) -> None:
     enriched = tmp_path / "scan_ENRICHED.csv"
     _write_test_enriched_csv(
         enriched,
@@ -922,12 +979,80 @@ def test_reid_engine_dynamic_singleton(tmp_path) -> None:
     from app.modules.reid.engine import run_reid
 
     result = run_reid(enriched, "wifi")
+    output = (tmp_path / "scan_REID.csv").read_text(encoding="utf-8")
 
+    assert result["dynamic_cluster_count"] == 0
+    assert result["noise_cluster_count"] == 1
+    assert ",noise,noise," in output
+
+
+def test_persistent_singleton_mac_is_not_noise(tmp_path) -> None:
+    enriched = tmp_path / "scan_ENRICHED.csv"
+    _write_test_enriched_csv(
+        enriched,
+        [
+            {
+                "timestamp_utc": str(1000.0 + index * 5),
+                "frame_type": "probe",
+                "src_mac": "82:aa:bb:cc:dd:ee",
+                "rssi_dbm": -65,
+                "gps_lat": 32.0,
+                "gps_lon": 34.0,
+                "match_found": True,
+            }
+            for index in range(10)
+        ],
+    )
+
+    from app.modules.reid.engine import run_reid
+
+    result = run_reid(enriched, "wifi")
+    with (tmp_path / "scan_REID.csv").open(newline="", encoding="utf-8") as file:
+        import csv
+
+        output_rows = list(csv.DictReader(file))
+
+    assert result["noise_cluster_count"] == 0
     assert result["dynamic_cluster_count"] == 1
-    assert result["singleton_dynamic_count"] == 1
+    assert all(row["cluster_type"] == "dynamic" for row in output_rows)
+    assert all(row["cluster_id"].isdigit() for row in output_rows)
 
 
-def test_reid_engine_dynamic_association(tmp_path) -> None:
+def test_ephemeral_singleton_mac_is_noise(tmp_path) -> None:
+    enriched = tmp_path / "scan_ENRICHED.csv"
+    _write_test_enriched_csv(
+        enriched,
+        [
+            {
+                "timestamp_utc": "1000.0",
+                "frame_type": "probe",
+                "src_mac": "82:aa:bb:cc:dd:ee",
+                "rssi_dbm": -65,
+                "gps_lat": 32.0,
+                "gps_lon": 34.0,
+                "match_found": True,
+            },
+            {
+                "timestamp_utc": "1001.0",
+                "frame_type": "probe",
+                "src_mac": "82:aa:bb:cc:dd:ee",
+                "rssi_dbm": -66,
+                "gps_lat": 32.0,
+                "gps_lon": 34.0,
+                "match_found": True,
+            },
+        ],
+    )
+
+    from app.modules.reid.engine import run_reid
+
+    result = run_reid(enriched, "wifi")
+
+    assert result["noise_cluster_count"] == 1
+    assert result["dynamic_cluster_count"] == 0
+
+
+def test_multi_mac_cluster_keeps_numeric_id(tmp_path) -> None:
     enriched = tmp_path / "scan_ENRICHED.csv"
     _write_test_enriched_csv(
         enriched,
@@ -941,21 +1066,21 @@ def test_reid_engine_dynamic_association(tmp_path) -> None:
                 "gps_lon": 34.0,
                 "match_found": True,
                 "seq_ctl": 10,
-                "ie_ids": "1,3,221",
-                "ie_fingerprint": "fp",
+                "ie_ids": "1,50,45,127,221",
+                "ie_fingerprint": "1:aabb;50:ccdd;45:eeff;127:1122;221:3344",
                 "frame_len": 120,
             },
             {
-                "timestamp_utc": "2026-01-01T00:00:00Z",
+                "timestamp_utc": "2026-01-01T00:00:01Z",
                 "frame_type": "probe",
                 "src_mac": "02:11:22:aa:bb:cc",
                 "rssi_dbm": -60,
                 "gps_lat": 32.0,
                 "gps_lon": 34.0,
                 "match_found": True,
-                "seq_ctl": 10,
-                "ie_ids": "1,3,221",
-                "ie_fingerprint": "fp",
+                "seq_ctl": 20,
+                "ie_ids": "1,50,45,127,221",
+                "ie_fingerprint": "1:aabb;50:ccdd;45:eeff;127:1122;221:3344",
                 "frame_len": 120,
             },
         ],
@@ -966,7 +1091,200 @@ def test_reid_engine_dynamic_association(tmp_path) -> None:
     result = run_reid(enriched, "wifi")
 
     assert result["dynamic_cluster_count"] == 1
-    assert result["singleton_dynamic_count"] == 0
+    assert result["noise_cluster_count"] == 0
+    with (tmp_path / "scan_REID.csv").open(newline="", encoding="utf-8") as file:
+        import csv
+
+        output_rows = list(csv.DictReader(file))
+    assert all(row["confidence"] == "high" for row in output_rows)
+    assert all(row["cluster_type"] == "dynamic" for row in output_rows)
+    assert all(row["cluster_id"].isdigit() for row in output_rows)
+    assert len({row["cluster_id"] for row in output_rows}) == 1
+
+
+def test_reid_unique_dynamic_mac_count(tmp_path) -> None:
+    """unique_dynamic_mac_count equals distinct MACs in non-noise clusters."""
+    enriched = tmp_path / "scan_ENRICHED.csv"
+    _write_test_enriched_csv(
+        enriched,
+        [
+            {
+                "timestamp_utc": "2026-01-01T00:00:00Z",
+                "frame_type": "probe",
+                "src_mac": "02:11:22:33:44:55",
+                "rssi_dbm": -60,
+                "gps_lat": 32.0,
+                "gps_lon": 34.0,
+                "match_found": True,
+                "seq_ctl": 10,
+                "ie_ids": "1,50,45,127,221",
+                "ie_fingerprint": "1:aabb;50:ccdd;45:eeff;127:1122;221:3344",
+                "frame_len": 120,
+            },
+            {
+                "timestamp_utc": "2026-01-01T00:00:01Z",
+                "frame_type": "probe",
+                "src_mac": "02:11:22:aa:bb:cc",
+                "rssi_dbm": -60,
+                "gps_lat": 32.0,
+                "gps_lon": 34.0,
+                "match_found": True,
+                "seq_ctl": 20,
+                "ie_ids": "1,50,45,127,221",
+                "ie_fingerprint": "1:aabb;50:ccdd;45:eeff;127:1122;221:3344",
+                "frame_len": 120,
+            },
+            {
+                "timestamp_utc": "2026-01-01T00:00:20Z",
+                "frame_type": "probe",
+                "src_mac": "82:aa:bb:cc:dd:ee",
+                "rssi_dbm": -70,
+                "gps_lat": 32.0,
+                "gps_lon": 34.0,
+                "match_found": True,
+            },
+        ],
+    )
+
+    from app.modules.reid.engine import run_reid
+
+    result = run_reid(enriched, "wifi")
+
+    assert result["dynamic_cluster_count"] == 1
+    assert result["noise_cluster_count"] == 1
+    assert result["unique_dynamic_mac_count"] == 2
+
+
+def test_reid_cluster_confidence_in_result(tmp_path) -> None:
+    """cluster_confidence maps non-noise dynamic cluster IDs to tier strings."""
+    from app.modules.reid.engine import run_reid
+
+    csv_path = tmp_path / "scan_ENRICHED.csv"
+    rows = []
+    base_time = 1_700_000_000.0
+    for i in range(6):
+        rows.append({
+            "timestamp_utc": str(base_time + i),
+            "src_mac": "02:aa:bb:cc:dd:01",
+            "rssi_dbm": "-60",
+            "gps_lat": "32.0",
+            "gps_lon": "34.0",
+            "frame_type": "probe",
+        })
+    for i in range(6):
+        rows.append({
+            "timestamp_utc": str(base_time + 100 + i),
+            "src_mac": "02:aa:bb:cc:dd:02",
+            "rssi_dbm": "-65",
+            "gps_lat": "32.001",
+            "gps_lon": "34.001",
+            "frame_type": "probe",
+        })
+    import csv as csv_mod
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv_mod.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    result = run_reid(csv_path, protocol="wifi")
+
+    assert "cluster_confidence" in result
+    cc = result["cluster_confidence"]
+    for cluster_id, tier in cc.items():
+        assert tier in ("high", "medium", "low"), f"Unexpected tier {tier!r} for cluster {cluster_id}"
+        assert cluster_id != "noise", "Noise clusters must not appear in cluster_confidence"
+
+
+def test_probe_requests_only_filters_rows(tmp_path) -> None:
+    enriched = tmp_path / "scan_ENRICHED.csv"
+    _write_test_enriched_csv(
+        enriched,
+        [
+            {
+                "timestamp_utc": "2026-01-01T00:00:00Z",
+                "frame_type": "probe-req",
+                "src_mac": "02:11:22:33:44:55",
+                "rssi_dbm": -60,
+                "gps_lat": 32.0,
+                "gps_lon": 34.0,
+                "match_found": True,
+            },
+            {
+                "timestamp_utc": "2026-01-01T00:00:01Z",
+                "frame_type": "beacon",
+                "src_mac": "02:11:22:aa:bb:cc",
+                "rssi_dbm": -61,
+                "gps_lat": 32.0,
+                "gps_lon": 34.0,
+                "match_found": True,
+            },
+        ],
+    )
+
+    from app.modules.reid.engine import run_reid
+
+    result = run_reid(enriched, "wifi", probe_requests_only=True)
+    output = (tmp_path / "scan_REID.csv").read_text(encoding="utf-8")
+
+    assert result["total_rows"] == 1
+    assert result["noise_cluster_count"] == 1
+    assert "02:11:22:33:44:55" in output
+    assert "02:11:22:aa:bb:cc" not in output
+
+
+def test_reid_request_exposes_tunable_defaults() -> None:
+    from app.api.reid import ReIdRunRequest
+
+    request = ReIdRunRequest(enriched_csv_filename="scan_ENRICHED.csv")
+
+    assert request.association_threshold == 0.8
+    assert request.seq_gap_max == 64
+    assert request.time_gap_max_sec == 30.0
+    assert request.burst_window_sec == 60.0
+    assert request.probe_requests_only is False
+
+
+def test_all_key_constants() -> None:
+    from app.modules.calibration.engine import _FIT_WARNING_MIN_INLIER_RATIO, _FIT_WARNING_MIN_SAMPLES
+    from app.modules.localization.engine import _LOC_06_GRID_RESOLUTION_M, _LOC_UNCERTAINTY_ALPHA, _LOC_UNCERTAINTY_PARTICIPATION_FLOOR
+    from app.modules.reid.engine import _REID_MIN_ROWS_SINGLETON
+
+    assert _REID_MIN_ROWS_SINGLETON == 5
+    assert _LOC_06_GRID_RESOLUTION_M == 2.0
+    assert _LOC_UNCERTAINTY_PARTICIPATION_FLOOR == 0.50
+    assert _LOC_UNCERTAINTY_ALPHA == 2.0
+    assert _FIT_WARNING_MIN_SAMPLES == 10
+    assert _FIT_WARNING_MIN_INLIER_RATIO == 0.70
+
+
+def test_reid_bleach_scoring_helpers() -> None:
+    from app.modules.reid.engine import (
+        _association_score,
+        _ie_fingerprint_score,
+        _seq_continuity_bonus,
+        _ssid_bonus,
+    )
+
+    fingerprint = "0:74657374;1:aabb;50:ccdd;45:eeff;127:1122;221:3344"
+    assert _ie_fingerprint_score(fingerprint, fingerprint) == 1.0
+    assert _seq_continuity_bonus(4090, 10) == 1.0
+    assert _seq_continuity_bonus(10, 100) == 0.0
+    assert _ssid_bonus(fingerprint, fingerprint) == 1.0
+
+    left = {"rows": [{"timestamp_utc": "2026-01-01T00:00:00Z", "rssi_dbm": -50, "seq_ctl": 10, "ie_fingerprint": fingerprint, "frame_len": 120}]}
+    right = {"rows": [{"timestamp_utc": "2026-01-01T00:00:01Z", "rssi_dbm": -51, "seq_ctl": 20, "ie_fingerprint": fingerprint, "frame_len": 120}]}
+
+    assert _association_score(left, right) == pytest.approx(1.10)
+
+
+def test_reid_rssi_sanity_rejects_impossible_pair() -> None:
+    from app.modules.reid.engine import _association_score
+
+    fingerprint = "1:aabb;50:ccdd;45:eeff;127:1122;221:3344"
+    left = {"rows": [{"timestamp_utc": "2026-01-01T00:00:00Z", "rssi_dbm": -20, "seq_ctl": 10, "ie_fingerprint": fingerprint, "frame_len": 120}]}
+    right = {"rows": [{"timestamp_utc": "2026-01-01T00:00:01Z", "rssi_dbm": -80, "seq_ctl": 20, "ie_fingerprint": fingerprint, "frame_len": 120}]}
+
+    assert _association_score(left, right) == 0.0
 
 
 def test_reid_engine_uppercase_suffix(tmp_path) -> None:
@@ -1193,6 +1511,453 @@ def test_localization_engine_partial_failure(tmp_path) -> None:
     assert c1["status"] == "success"
     assert c2["status"] == "failed"
     assert c2["failure_reason"] == "insufficient_samples"
+
+
+def test_localization_engine_ransac_removes_outlier(tmp_path) -> None:
+    reid = tmp_path / "scan_REID.csv"
+    rows = [
+        {"timestamp_utc": "2026-01-01T00:00:00Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -48, "gps_lat": 32.0, "gps_lon": 34.0, "cluster_id": "c1", "cluster_type": "static"},
+        {"timestamp_utc": "2026-01-01T00:00:01Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -49, "gps_lat": 32.0001, "gps_lon": 34.0, "cluster_id": "c1", "cluster_type": "static"},
+        {"timestamp_utc": "2026-01-01T00:00:02Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -50, "gps_lat": 32.0, "gps_lon": 34.0001, "cluster_id": "c1", "cluster_type": "static"},
+        {"timestamp_utc": "2026-01-01T00:00:03Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -5, "gps_lat": 32.01, "gps_lon": 34.01, "cluster_id": "c1", "cluster_type": "static"},
+    ]
+    _write_test_reid_csv(reid, rows)
+
+    from app.modules.localization.engine import run_localization
+
+    result = run_localization(reid, _calibration_params(), grid_resolution_m=20)
+
+    assert result["cluster_results"][0]["sample_count"] == 3
+    assert any("RANSAC removed 1 outlier" in warning for warning in result["warnings"])
+
+
+def test_localization_engine_dynamic_sigma_and_confidence_cutoff_constants() -> None:
+    from app.modules.localization.engine import _LOC_07_DYNAMIC_SIGMA_ALPHA, _LOC_08_CONFIDENCE_CUTOFF
+
+    assert _LOC_07_DYNAMIC_SIGMA_ALPHA == 0.05
+    assert _LOC_08_CONFIDENCE_CUTOFF == 0.50
+
+
+def test_localization_confidence_cutoff_filters_peaks(tmp_path) -> None:
+    reid = tmp_path / "scan_REID.csv"
+    _write_test_reid_csv(
+        reid,
+        [
+            {"timestamp_utc": "2026-01-01T00:00:00Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -60, "gps_lat": 32.0, "gps_lon": 34.0, "cluster_id": "c1", "cluster_type": "static"},
+            {"timestamp_utc": "2026-01-01T00:00:01Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -60, "gps_lat": 32.001, "gps_lon": 34.0, "cluster_id": "c1", "cluster_type": "static"},
+            {"timestamp_utc": "2026-01-01T00:00:02Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -60, "gps_lat": 32.0, "gps_lon": 34.001, "cluster_id": "c1", "cluster_type": "static"},
+            {"timestamp_utc": "2026-01-01T00:00:03Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -60, "gps_lat": 32.001, "gps_lon": 34.001, "cluster_id": "c1", "cluster_type": "static"},
+        ],
+    )
+
+    from app.modules.localization.engine import run_localization
+
+    low_cutoff = run_localization(reid, _calibration_params(), grid_resolution_m=10, confidence_cutoff=0.0)
+    high_cutoff = run_localization(reid, _calibration_params(), grid_resolution_m=10, confidence_cutoff=1.0)
+
+    assert len(low_cutoff["cluster_results"][0]["candidate_peaks"]) > len(high_cutoff["cluster_results"][0]["candidate_peaks"])
+
+
+def test_localization_dynamic_sigma_increases_with_distance(tmp_path) -> None:
+    reid = tmp_path / "scan_REID.csv"
+    _write_test_reid_csv(
+        reid,
+        [
+            {"timestamp_utc": "2026-01-01T00:00:00Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -60, "gps_lat": 32.0, "gps_lon": 34.0, "cluster_id": "c1", "cluster_type": "static"},
+            {"timestamp_utc": "2026-01-01T00:00:01Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -60, "gps_lat": 32.001, "gps_lon": 34.0, "cluster_id": "c1", "cluster_type": "static"},
+            {"timestamp_utc": "2026-01-01T00:00:02Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -60, "gps_lat": 32.0, "gps_lon": 34.001, "cluster_id": "c1", "cluster_type": "static"},
+            {"timestamp_utc": "2026-01-01T00:00:03Z", "frame_type": "probe", "src_mac": "00:11:22:33:44:55", "rssi_dbm": -60, "gps_lat": 32.001, "gps_lon": 34.001, "cluster_id": "c1", "cluster_type": "static"},
+        ],
+    )
+
+    from app.modules.localization.engine import run_localization
+
+    fixed_sigma = run_localization(reid, _calibration_params(), grid_resolution_m=10, dynamic_sigma_alpha=0.0)
+    dynamic_sigma = run_localization(reid, _calibration_params(), grid_resolution_m=10, dynamic_sigma_alpha=0.1)
+
+    assert fixed_sigma["cluster_results"][0]["grid_cells"] != dynamic_sigma["cluster_results"][0]["grid_cells"]
+
+
+def test_localization_request_exposes_tunable_defaults() -> None:
+    from app.api.localization import LocalizationRunRequest
+
+    request = LocalizationRunRequest(reid_csv_filename="scan_REID.csv")
+
+    from app.modules.localization.engine import _LOC_06_GRID_RESOLUTION_M
+
+    assert _LOC_06_GRID_RESOLUTION_M == 2.0
+    assert request.dynamic_sigma_alpha == 0.05
+    assert request.confidence_cutoff == 0.50
+    assert request.uncertainty_participation_floor == 0.50
+    assert request.uncertainty_alpha == 2.0
+
+
+def test_uncertainty_region_weighted_spread_is_tight_for_peaked_posterior() -> None:
+    from app.modules.localization.engine import _uncertainty_region
+
+    cells = [(i * 0.000018, j * 0.000018) for i in range(-20, 20) for j in range(-20, 20)]
+    peak = {"lat": 0.0, "lon": 0.0, "value": 1.0}
+    posterior = []
+    for lat, lon in cells:
+        cell_dist = ((lat / 0.000018) ** 2 + (lon / 0.000018) ** 2) ** 0.5
+        posterior.append(max(0.0, 1.0 - cell_dist / 5.0))
+
+    region = _uncertainty_region(peak, cells, posterior, 2.0, participation_floor=0.05, alpha=2.0)
+
+    assert region["radius_m"] < 20.0, f"Radius too large for peaked posterior: {region['radius_m']}m"
+    assert region["radius_m"] >= 2.0
+
+
+def test_uncertainty_region_all_below_floor_returns_grid_resolution() -> None:
+    from app.modules.localization.engine import _uncertainty_region
+
+    cells = [(i * 0.000018, j * 0.000018) for i in range(-5, 5) for j in range(-5, 5)]
+    peak = {"lat": 0.0, "lon": 0.0, "value": 1.0}
+    # All posteriors below participation_floor → total_w == 0 → fall back to grid resolution
+    posterior = [0.02] * len(cells)
+
+    region = _uncertainty_region(peak, cells, posterior, 5.0, participation_floor=0.05, alpha=2.0)
+
+    assert region["radius_m"] == 5.0
+
+
+def test_uncertainty_region_uses_peak_local_high_posterior_component() -> None:
+    from app.modules.localization.engine import _uncertainty_region
+
+    cells = [(0.0, j * 0.000018) for j in range(10)]
+    posterior = [0.95, 0.94, 0.93, 0.1, 0.1, 0.1, 0.92, 0.91, 0.1, 0.1]
+    primary_peak = {"lat": cells[0][0], "lon": cells[0][1], "value": posterior[0]}
+    secondary_peak = {"lat": cells[6][0], "lon": cells[6][1], "value": posterior[6]}
+
+    primary_region = _uncertainty_region(primary_peak, cells, posterior, 2.0, participation_floor=0.9, alpha=2.0, shape=(1, 10))
+    secondary_region = _uncertainty_region(
+        secondary_peak,
+        cells,
+        posterior,
+        2.0,
+        participation_floor=0.9,
+        alpha=2.0,
+        shape=(1, 10),
+    )
+
+    assert primary_region["radius_m"] < 6.0
+    assert secondary_region["radius_m"] < 4.0
+
+
+def test_uncertainty_region_below_floor_peak_does_not_use_other_peak_cells() -> None:
+    from app.modules.localization.engine import _uncertainty_region
+
+    cells = [(0.0, j * 0.000018) for j in range(10)]
+    posterior = [1.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.84, 0.1, 0.1, 0.1]
+    below_floor_peak = {"lat": cells[6][0], "lon": cells[6][1], "value": posterior[6]}
+
+    region = _uncertainty_region(below_floor_peak, cells, posterior, 2.0, participation_floor=0.9, alpha=2.0, shape=(1, 10))
+
+    assert region["radius_m"] == 2.0
+
+
+def test_noise_cluster_not_localized(tmp_path) -> None:
+    reid_csv = tmp_path / "test_REID.csv"
+    _write_test_reid_csv(
+        reid_csv,
+        [
+            *[
+                {
+                    "timestamp_utc": str(1000 + index),
+                    "frame_type": "probe",
+                    "src_mac": f"02:00:00:00:00:0{index}",
+                    "rssi_dbm": -65,
+                    "gps_lat": 32.0 + index * 0.001,
+                    "gps_lon": 34.0 + index * 0.001,
+                    "cluster_id": "noise",
+                    "cluster_type": "noise",
+                }
+                for index in range(5)
+            ],
+            *[
+                {
+                    "timestamp_utc": str(2000 + index),
+                    "frame_type": "probe",
+                    "src_mac": "02:11:22:33:44:55",
+                    "rssi_dbm": -60,
+                    "gps_lat": 32.005 + index * 0.00001,
+                    "gps_lon": 34.005 + index * 0.00001,
+                    "cluster_id": "1",
+                    "cluster_type": "dynamic",
+                }
+                for index in range(4)
+            ],
+        ],
+    )
+
+    from app.modules.localization.engine import run_localization
+
+    result = run_localization(reid_csv, {"rssi_at_1m": -40.0, "path_loss_n": 3.0, "sigma": 6.0})
+    cluster_ids = [cluster["cluster_id"] for cluster in result["cluster_results"]]
+
+    assert "noise" not in cluster_ids
+    assert "1" in cluster_ids
+    assert any("noise" in warning.lower() for warning in result["warnings"])
+
+
+def test_evaluate_single_match() -> None:
+    from app.modules.result_analysis.engine import evaluate
+
+    preds = [{"cluster_id": "c1", "lat": 0.0, "lon": 0.0, "radius_m": 12.0, "cluster_type": "dynamic", "num_samples": 5}]
+    gts = [{"gt_id": "g1", "lat": 0.0, "lon": 0.0001, "label": None}]
+    result = evaluate(preds, gts)
+
+    assert len(result["matches"]) == 1
+    assert result["matches"][0]["primary_cluster_id"] == "c1"
+    assert result["matches"][0]["association_status"] == "clear_match"
+    assert result["false_positives"] == []
+    assert result["false_negatives"] == []
+    assert "ratio_gate" in result["eval_params"]
+    assert result["ambiguous_gts"] == []
+    assert result["radius_reliability_note"]
+
+
+def test_evaluate_false_negative_when_gt_too_far() -> None:
+    from app.modules.result_analysis.engine import evaluate
+
+    preds = [{"cluster_id": "c1", "lat": 0.0, "lon": 0.0, "radius_m": 5.0, "cluster_type": "dynamic", "num_samples": 5}]
+    gts = [{"gt_id": "g1", "lat": 1.0, "lon": 1.0, "label": None}]
+    result = evaluate(preds, gts)
+
+    assert result["matches"] == []
+    assert len(result["false_positives"]) == 1
+    assert len(result["false_negatives"]) == 1
+    assert result["ambiguous_gts"] == []
+
+
+def test_evaluate_pack_produces_ambiguous_gt() -> None:
+    from app.modules.result_analysis.engine import evaluate
+
+    preds = [
+        {"cluster_id": "c1", "lat": 0.0, "lon": 0.00002, "radius_m": 10.0, "cluster_type": "dynamic", "num_samples": 5},
+        {"cluster_id": "c2", "lat": 0.0, "lon": 0.00003, "radius_m": 10.0, "cluster_type": "dynamic", "num_samples": 5},
+    ]
+    gts = [{"gt_id": "g1", "lat": 0.0, "lon": 0.0, "label": None}]
+    result = evaluate(preds, gts)
+
+    assert result["matches"] == []
+    assert len(result["ambiguous_gts"]) == 1
+    assert result["ambiguous_gts"][0]["gt_id"] == "g1"
+    assert "c1" in result["ambiguous_gts"][0]["competing_cluster_ids"]
+    assert "c2" in result["ambiguous_gts"][0]["competing_cluster_ids"]
+    assert result["false_negatives"] == []
+
+
+def test_evaluate_over_split() -> None:
+    from app.modules.result_analysis.engine import evaluate
+
+    preds = [
+        {"cluster_id": "c1", "lat": 0.0, "lon": 0.00001, "radius_m": 10.0, "cluster_type": "dynamic", "num_samples": 5},
+        {"cluster_id": "c2", "lat": 0.0, "lon": 0.00002, "radius_m": 10.0, "cluster_type": "dynamic", "num_samples": 5},
+    ]
+    gts = [{"gt_id": "g1", "lat": 0.0, "lon": 0.0, "label": "Device A"}]
+    result = evaluate(preds, gts)
+
+    assert len(result["matches"]) == 1
+    assert len(result["false_positives"]) == 1
+    assert len(result["duplicates"]) >= 1
+    assert result["metrics"]["count_error"] == 1
+
+
+def test_evaluate_dominant_match_sets_dominance_margin() -> None:
+    from app.modules.result_analysis.engine import evaluate
+
+    preds = [
+        {"cluster_id": "c1", "lat": 0.0, "lon": 0.000009, "radius_m": 5.0, "cluster_type": "dynamic", "num_samples": 5},
+        {"cluster_id": "c2", "lat": 0.0, "lon": 0.001, "radius_m": 5.0, "cluster_type": "dynamic", "num_samples": 5},
+    ]
+    gts = [{"gt_id": "g1", "lat": 0.0, "lon": 0.0, "label": None}]
+    result = evaluate(preds, gts)
+
+    assert len(result["matches"]) == 1
+    assert result["matches"][0]["primary_cluster_id"] == "c1"
+    assert result["matches"][0]["association_status"] == "clear_match"
+    assert result["matches"][0]["dominance_margin"] is not None
+    assert result["matches"][0]["dominance_margin"] >= 2.0
+    assert result["ambiguous_gts"] == []
+
+
+def test_evaluate_three_close_clusters_produces_ambiguous_gt() -> None:
+    from app.modules.result_analysis.engine import evaluate
+
+    preds = [
+        {"cluster_id": "c1", "lat": 0.0, "lon": 0.000045, "radius_m": 20.0, "cluster_type": "dynamic", "num_samples": 5},
+        {"cluster_id": "c2", "lat": 0.0, "lon": 0.000054, "radius_m": 20.0, "cluster_type": "dynamic", "num_samples": 5},
+        {"cluster_id": "c3", "lat": 0.0, "lon": 0.000063, "radius_m": 20.0, "cluster_type": "dynamic", "num_samples": 5},
+    ]
+    gts = [{"gt_id": "g1", "lat": 0.0, "lon": 0.0, "label": "Person A"}]
+    result = evaluate(preds, gts)
+
+    assert result["matches"] == []
+    assert len(result["ambiguous_gts"]) == 1
+    assert result["ambiguous_gts"][0]["nearest_cluster_id"] == "c1"
+    assert len(result["ambiguous_gts"][0]["competing_cluster_ids"]) >= 2
+
+
+def test_evaluate_gt_beyond_max_match_dist_is_fn_not_ambiguous() -> None:
+    from app.modules.result_analysis.engine import evaluate
+
+    preds = [{"cluster_id": "c1", "lat": 0.0, "lon": 0.0, "radius_m": 5.0, "cluster_type": "dynamic", "num_samples": 5}]
+    gts = [{"gt_id": "g1", "lat": 1.0, "lon": 1.0, "label": None}]
+    result = evaluate(preds, gts)
+
+    assert result["matches"] == []
+    assert result["ambiguous_gts"] == []
+    assert len(result["false_negatives"]) == 1
+
+
+def test_evaluate_custom_ratio_gate() -> None:
+    from app.modules.result_analysis.engine import evaluate
+
+    preds = [
+        {"cluster_id": "c1", "lat": 0.0, "lon": 0.00002, "radius_m": 10.0, "cluster_type": "dynamic", "num_samples": 5},
+        {"cluster_id": "c2", "lat": 0.0, "lon": 0.00003, "radius_m": 10.0, "cluster_type": "dynamic", "num_samples": 5},
+    ]
+    gts = [{"gt_id": "g1", "lat": 0.0, "lon": 0.0, "label": None}]
+
+    result_strict = evaluate(preds, gts, ratio_gate=2.0)
+    assert result_strict["matches"] == []
+    assert len(result_strict["ambiguous_gts"]) == 1
+
+    result_loose = evaluate(preds, gts, ratio_gate=1.3)
+    assert len(result_loose["matches"]) == 1
+    assert result_loose["ambiguous_gts"] == []
+
+
+def test_evaluate_empty_inputs() -> None:
+    from app.modules.result_analysis.engine import evaluate
+
+    result = evaluate([], [])
+
+    assert result["matches"] == []
+    assert result["metrics"]["recall"] == 0.0
+
+
+def test_gt_store_add_delete() -> None:
+    from app.modules.result_analysis.gt_store import add_gt_point, clear_gt_points, delete_gt_point, get_gt_points
+
+    clear_gt_points("test_session_ra")
+    point = add_gt_point("test_session_ra", 32.0, 34.0, "Device A")
+    assert point["gt_id"] is not None
+    assert len(get_gt_points("test_session_ra")) == 1
+    assert delete_gt_point("test_session_ra", point["gt_id"])
+    assert get_gt_points("test_session_ra") == []
+
+
+def test_extract_predictions_from_loc_result() -> None:
+    from app.modules.result_analysis.engine import extract_predictions_from_localization_result
+
+    loc = {
+        "cluster_results": [
+            {
+                "cluster_id": "c1",
+                "cluster_type": "dynamic",
+                "status": "success",
+                "primary_peak": {"lat": 1.0, "lon": 2.0, "value": 0.9},
+                "uncertainty_regions": [{"center_lat": 1.0, "center_lon": 2.0, "radius_m": 8.5}],
+                "sample_count": 12,
+            },
+            {
+                "cluster_id": "c2",
+                "cluster_type": "static",
+                "status": "failed",
+                "primary_peak": None,
+                "uncertainty_regions": [],
+                "sample_count": 0,
+            },
+        ]
+    }
+
+    preds = extract_predictions_from_localization_result(loc)
+
+    assert len(preds) == 1
+    assert preds[0]["cluster_id"] == "c1"
+    assert preds[0]["radius_m"] == 8.5
+
+
+def test_result_analysis_api_evaluate(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "DATA"))
+    folder = tmp_path / "DATA" / "scan_ra_test"
+    folder.mkdir(parents=True)
+    client = TestClient(create_app())
+    session_id = client.post("/api/sessions", json={"folder_id": "scan_ra_test"}).json()["session_id"]
+
+    from app.modules.session_navigation.session_store import get_session
+
+    session = get_session(session_id)
+    session["current_localization_result"] = {
+        "cluster_results": [
+            {
+                "cluster_id": "c1",
+                "cluster_type": "dynamic",
+                "status": "success",
+                "primary_peak": {"lat": 32.0, "lon": 34.0, "value": 0.9},
+                "uncertainty_regions": [{"center_lat": 32.0, "center_lon": 34.0, "radius_m": 20.0}],
+                "sample_count": 5,
+            }
+        ]
+    }
+
+    empty_response = client.post(f"/api/sessions/{session_id}/result-analysis/evaluate", json={})
+    add_response = client.post(
+        f"/api/sessions/{session_id}/result-analysis/ground-truth",
+        json={"lat": 32.0, "lon": 34.0, "label": "Device A"},
+    )
+    eval_response = client.post(f"/api/sessions/{session_id}/result-analysis/evaluate", json={})
+    state_response = client.get(f"/api/sessions/{session_id}/result-analysis")
+
+    assert empty_response.status_code == 422
+    assert add_response.status_code == 200
+    assert eval_response.status_code == 200
+    assert eval_response.json()["matches"][0]["primary_cluster_id"] == "c1"
+    assert state_response.json()["last_evaluation"]["n_gt"] == 1
+
+
+def test_rerun_reid_stage_accepted(tmp_path, monkeypatch) -> None:
+    """Rerun endpoint accepts stage='reid' without 422."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    folder = tmp_path / "scan_ra_reid_test"
+    folder.mkdir()
+    enriched = folder / "scan_ENRICHED.csv"
+    _write_test_enriched_csv(
+        enriched,
+        [
+            {
+                "timestamp_utc": f"2026-01-01T00:00:0{index}Z",
+                "frame_type": "probe",
+                "src_mac": "00:11:22:33:44:55",
+                "rssi_dbm": -60 - index,
+                "gps_lat": 32.0 + index * 0.0001,
+                "gps_lon": 34.0 + index * 0.0001,
+                "match_found": True,
+            }
+            for index in range(5)
+        ],
+    )
+    client = TestClient(create_app())
+    session_id = client.post("/api/sessions", json={"folder_id": "scan_ra_reid_test"}).json()["session_id"]
+
+    from app.modules.session_navigation.session_store import get_session
+
+    session = get_session(session_id)
+    session["active_enriched_artifact"] = str(enriched)
+    session["active_calibration"] = {"approved": True, "parameters": _calibration_params()}
+
+    response = client.post(
+        f"/api/sessions/{session_id}/result-analysis/rerun",
+        json={"stage": "reid", "reid_params": {}, "localization_params": {"grid_resolution_m": 20}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert "execution_id" in response.json()
+    execution_response = client.get(f"/api/executions/{response.json()['execution_id']}")
+    assert execution_response.json()["status"] == "success"
 
 
 def test_localization_engine_uppercase_csv(tmp_path) -> None:

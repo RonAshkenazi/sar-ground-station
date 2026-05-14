@@ -195,17 +195,29 @@ export const activateArtifact = (
 
 export interface ReIdQuality {
   reid_csv_path?: string
+  cluster_confidence?: Record<string, 'high' | 'medium' | 'low'>
   total_rows: number
   static_cluster_count: number
   dynamic_cluster_count: number
-  singleton_dynamic_count: number
+  unique_dynamic_mac_count?: number
+  noise_cluster_count: number
   warnings: string[]
 }
 
-export const runReid = (session_id: string, enriched_csv_filename: string) =>
+export const runReid = (
+  session_id: string,
+  enriched_csv_filename: string,
+  params: {
+    association_threshold?: number
+    seq_gap_max?: number
+    time_gap_max_sec?: number
+    burst_window_sec?: number
+    probe_requests_only?: boolean
+  } = {},
+) =>
   apiFetch<{ execution_id: string; status: string }>(
     `/api/sessions/${session_id}/reid/run`,
-    { method: 'POST', body: JSON.stringify({ enriched_csv_filename }) },
+    { method: 'POST', body: JSON.stringify({ enriched_csv_filename, ...params }) },
   )
 
 export interface LocalizationClusterResult {
@@ -237,9 +249,160 @@ export const runLocalization = (
     bounds_mode?: 'auto_track_plus_buffer' | 'manual_rectangle'
     buffer_m?: number
     grid_resolution_m?: number
+    dynamic_sigma_alpha?: number
+    confidence_cutoff?: number
+    uncertainty_participation_floor?: number
+    uncertainty_alpha?: number
   },
 ) =>
   apiFetch<{ execution_id: string; status: string }>(
     `/api/sessions/${session_id}/localization/run`,
     { method: 'POST', body: JSON.stringify(body) },
+  )
+
+export interface GtPoint {
+  gt_id: string
+  lat: number
+  lon: number
+  label: string | null
+}
+
+export interface MatchDiagnostic {
+  gt_id: string
+  gt_lat: number
+  gt_lon: number
+  gt_label: string | null
+  primary_cluster_id: string
+  cluster_lat: number
+  cluster_lon: number
+  cluster_type: string | null
+  num_samples: number | null
+  uncertainty_radius_m: number | null
+  distance_m: number
+  covered: boolean
+  association_cost: number
+  dominance_margin: number | null
+  association_status: 'clear_match' | 'ambiguous_match'
+  secondary_candidates: Array<{ cluster_id: string; distance_m: number; cost?: number }>
+}
+
+export interface EvaluationResult {
+  matches: MatchDiagnostic[]
+  false_positives: Array<{ cluster_id: string; lat: number; lon: number; cluster_type: string | null }>
+  false_negatives: Array<{ gt_id: string; lat: number; lon: number; label: string | null }>
+  ambiguous_gts: Array<{
+    gt_id: string
+    lat: number
+    lon: number
+    label: string | null
+    nearest_cluster_id: string | null
+    nearest_dist_m: number
+    competing_cluster_ids: string[]
+  }>
+  duplicates: Array<{ cluster_id: string; competing_for_gt_id: string; distance_m: number; cost: number }>
+  possible_merges: Array<{ cluster_id: string; candidate_gt_ids: string[]; distances_m: number[] }>
+  metrics: {
+    recall: number
+    precision: number
+    coverage: number
+    median_error_m: number | null
+    p90_error_m: number | null
+    median_radius_m: number | null
+    count_error: number
+  }
+  score: {
+    total: number
+    containment: number
+    distance: number
+    count: number
+    radius: number
+  }
+  eval_params: {
+    ratio_gate: number
+    max_match_dist_m: number
+    r_normalize_m: number
+    w_containment: number
+    w_distance: number
+    w_count: number
+    w_radius: number
+  }
+  n_predictions: number
+  n_gt: number
+  radius_reliability_note: string
+}
+
+export interface ResultAnalysisState {
+  session_id: string
+  gt_points: GtPoint[]
+  localization_available: boolean
+  last_evaluation: EvaluationResult | null
+}
+
+export const getResultAnalysis = (session_id: string) =>
+  apiFetch<ResultAnalysisState>(`/api/sessions/${session_id}/result-analysis`)
+
+export const addGtPoint = (session_id: string, lat: number, lon: number, label?: string) =>
+  apiFetch<GtPoint>(`/api/sessions/${session_id}/result-analysis/ground-truth`, {
+    method: 'POST',
+    body: JSON.stringify({ lat, lon, label: label ?? null }),
+  })
+
+export const importGtPoints = (session_id: string, points: Array<{ lat: number; lon: number; label?: string }>) =>
+  apiFetch<{ added: number; gt_points: GtPoint[] }>(
+    `/api/sessions/${session_id}/result-analysis/ground-truth/import`,
+    { method: 'POST', body: JSON.stringify({ points }) },
+  )
+
+export const deleteGtPoint = (session_id: string, gt_id: string) =>
+  apiFetch<{ deleted: string }>(`/api/sessions/${session_id}/result-analysis/ground-truth/${gt_id}`, {
+    method: 'DELETE',
+  })
+
+export const clearGtPoints = (session_id: string) =>
+  apiFetch<{ cleared: boolean }>(`/api/sessions/${session_id}/result-analysis/ground-truth/clear`, {
+    method: 'POST',
+  })
+
+export const runEvaluation = (
+  session_id: string,
+  params: {
+    ratio_gate?: number
+    max_match_dist_m?: number
+    r_normalize_m?: number
+    w_containment?: number
+    w_distance?: number
+    w_count?: number
+    w_radius?: number
+  } = {},
+) =>
+  apiFetch<EvaluationResult>(`/api/sessions/${session_id}/result-analysis/evaluate`, {
+    method: 'POST',
+    body: JSON.stringify(params),
+  })
+
+export const rerunFromResultAnalysis = (
+  session_id: string,
+  stage: 'localization' | 'reid',
+  localization_params?: {
+    grid_resolution_m?: number
+    dynamic_sigma_alpha?: number
+    confidence_cutoff?: number
+    uncertainty_participation_floor?: number
+    uncertainty_alpha?: number
+    buffer_m?: number
+  },
+  reid_params?: {
+    association_threshold?: number
+    seq_gap_max?: number
+    time_gap_max_sec?: number
+    burst_window_sec?: number
+    probe_requests_only?: boolean
+  },
+) =>
+  apiFetch<{ status: string; execution_id?: string; localization_execution_id?: string }>(
+    `/api/sessions/${session_id}/result-analysis/rerun`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ stage, localization_params, reid_params }),
+    },
   )

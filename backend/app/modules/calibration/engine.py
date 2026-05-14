@@ -13,8 +13,8 @@ FALLBACK_PRESETS = {
     "mixed_outdoor": {"rssi_at_1m": -40.0, "path_loss_n": 2.7, "sigma": 6.0},
 }
 
-_FIT_WARNING_MIN_SAMPLES = None  # TODO: TBD per spec Part B CAL-07
-_FIT_WARNING_MIN_INLIER_RATIO = None  # TODO: TBD per spec Part B CAL-08
+_FIT_WARNING_MIN_SAMPLES: int = 10
+_FIT_WARNING_MIN_INLIER_RATIO: float = 0.70
 
 
 def list_macs_in_csv(csv_path: Path) -> list[str]:

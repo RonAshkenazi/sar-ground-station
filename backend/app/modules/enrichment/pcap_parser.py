@@ -8,6 +8,8 @@ from typing import Any
 
 LINKTYPE_ETHERNET = 1
 LINKTYPE_IEEE802_11 = 105
+LINKTYPE_RADIOTAP = 127
+REID_IE_TAGS = {1, 50, 45, 127, 221}
 
 
 def parse_wifi_pcap(pcap_path: Path) -> list[dict[str, Any]]:
@@ -106,8 +108,19 @@ def _parse_payload(payload: bytes, linktype: int) -> dict[str, Any]:
                 "frame_type": f"wifi_type_{type_id}_subtype_{subtype}",
             }
         )
-        ies = _parse_information_elements(payload[24:])
-        frame.update(ies)
+        if type_id == 0:
+            if subtype in (4,):
+                ie_offset = 24
+            elif subtype in (5, 8):
+                ie_offset = 36
+            else:
+                ie_offset = 24
+            ies = _parse_information_elements(payload[ie_offset:])
+            frame.update(ies)
+    if linktype == LINKTYPE_RADIOTAP and len(payload) >= 4:
+        rt_len = struct.unpack_from("<H", payload, 2)[0]
+        if rt_len < len(payload):
+            return _parse_payload(payload[rt_len:], LINKTYPE_IEEE802_11)
     return frame
 
 
@@ -139,13 +152,14 @@ def _parse_information_elements(data: bytes) -> dict[str, str | None]:
         if len(value) < length:
             break
         ids.append(str(element_id))
-        fingerprint.append(f"{element_id}:{length}")
+        if element_id in REID_IE_TAGS:
+            fingerprint.append(f"{element_id}:{value.hex()}")
         if element_id == 221 and len(value) >= 3:
             vendor_ouis.append(value[:3].hex(":"))
         index += 2 + length
     return {
         "ie_ids": ",".join(ids) if ids else None,
-        "ie_fingerprint": "|".join(fingerprint) if fingerprint else None,
+        "ie_fingerprint": ";".join(fingerprint) if fingerprint else None,
         "ie_vendor_ouis": ",".join(vendor_ouis) if vendor_ouis else None,
     }
 

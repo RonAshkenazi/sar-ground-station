@@ -93,6 +93,80 @@
   background: var(--color-surface-alt);
 }
 
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-alt);
+}
+
+.panel-title-row .panel-title {
+  border-bottom: 0;
+}
+
+.filter-toggle,
+.sort-header {
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+}
+
+.filter-toggle {
+  padding: 8px 10px;
+  color: var(--color-primary);
+}
+
+.sort-header {
+  color: var(--color-text-muted);
+  padding: 0;
+  text-align: left;
+}
+
+.filter-bar {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.filter-bar label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.filter-bar input,
+.filter-bar select {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.clear-filters {
+  align-self: end;
+  min-height: 31px;
+}
+
+.row-count-hint {
+  padding: 8px 10px;
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  border-top: 1px solid var(--color-border);
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -130,7 +204,7 @@
   font-size: 0.8125rem;
 }
 
-.map-controls {
+.overview-right .map-controls {
   position: absolute;
   top: 10px;
   right: 10px;
@@ -147,7 +221,7 @@
   color: rgba(255, 255, 255, 0.92);
 }
 
-.map-control-check {
+.overview-right .map-control-check {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -155,14 +229,14 @@
   user-select: none;
 }
 
-.layer-toggle {
+.overview-right .layer-toggle {
   display: flex;
   border: 1px solid var(--color-border);
   border-radius: 4px;
   overflow: hidden;
 }
 
-.layer-btn {
+.overview-right .layer-btn {
   padding: 2px 8px;
   background: transparent;
   border: none;
@@ -171,11 +245,11 @@
   color: rgba(255, 255, 255, 0.85);
 }
 
-.layer-btn:hover {
+.overview-right .layer-btn:hover {
   background: var(--color-surface-alt);
 }
 
-.layer-btn.active {
+.overview-right .layer-btn.active {
   background: var(--color-primary);
   color: #fff;
 }

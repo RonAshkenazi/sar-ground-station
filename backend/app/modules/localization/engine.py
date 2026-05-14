@@ -6,12 +6,17 @@ from pathlib import Path
 from typing import Any
 
 
-_LOC_06_GRID_RESOLUTION_M: float = 5.0  # TODO: TBD per spec Part B LOC-06
-_LOC_07_DYNAMIC_SIGMA_ALPHA: float = 0.0  # TODO: TBD per spec Part B LOC-07 - 0.0 = fixed sigma
-_LOC_08_CONFIDENCE_CUTOFF: float = 0.0  # TODO: TBD per spec Part B LOC-08 - 0.0 accepts all peaks
-_LOC_12_UNCERTAINTY_TARGET_MASS_Q: float = 0.68
+_LOC_06_GRID_RESOLUTION_M: float = 2.0  # Founder decision: 2m grid resolution
+_LOC_07_DYNAMIC_SIGMA_ALPHA: float = 0.05  # FD: Krypto-inspired dynamic sigma; legacy default
+_LOC_08_CONFIDENCE_CUTOFF: float = 0.50  # FD-L2: legacy vis_thresh; operator-tunable
+_LOC_UNCERTAINTY_PARTICIPATION_FLOOR: float = 0.50  # min posterior for a cell to enter spread calc
+_LOC_UNCERTAINTY_ALPHA: float = 2.0  # radius = alpha * weighted_sigma; needs GT calibration
 _LOC_13_MIN_SAMPLES_PER_CLUSTER: int = 3
 _LOC_02_SEARCH_AREA_BUFFER_M: float = 20.0
+_LOC_RANSAC_ITERATIONS: int = 100
+_LOC_RANSAC_INLIER_THRESHOLD_DB: float = 10.0
+_LOC_RANSAC_MIN_SAMPLES: int = 3
+_LOC_RANSAC_EARLY_EXIT_INLIER_RATIO: float = 0.80
 
 REQUIRED_COLUMNS = {"timestamp_utc", "src_mac", "rssi_dbm", "gps_lat", "gps_lon", "cluster_id", "cluster_type"}
 
@@ -23,6 +28,10 @@ def run_localization(
     buffer_m: float = _LOC_02_SEARCH_AREA_BUFFER_M,
     manual_bounds: dict | None = None,
     grid_resolution_m: float = _LOC_06_GRID_RESOLUTION_M,
+    dynamic_sigma_alpha: float = _LOC_07_DYNAMIC_SIGMA_ALPHA,
+    confidence_cutoff: float = _LOC_08_CONFIDENCE_CUTOFF,
+    uncertainty_participation_floor: float = _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
+    uncertainty_alpha: float = _LOC_UNCERTAINTY_ALPHA,
 ) -> dict[str, Any]:
     rows = _load_rows(reid_csv_path)
     _validate_calibration(calibration)
@@ -54,21 +63,33 @@ def run_localization(
     cluster_results = []
 
     for cluster_id, cluster_rows in sorted(grouped.items(), key=lambda item: item[0]):
+        if cluster_id == "noise":
+            run_warnings.append(
+                f"Noise cluster ({len(cluster_rows)} rows) skipped - "
+                "aggregate of unassociated MACs, not a single emitter"
+            )
+            continue
         if len(cluster_rows) < _LOC_13_MIN_SAMPLES_PER_CLUSTER:
             warning = f"Cluster {cluster_id} has insufficient samples"
             run_warnings.append(warning)
             cluster_results.append(_failed_cluster(cluster_id, cluster_type_by_id[cluster_id], len(cluster_rows), warning))
             continue
 
-        # TODO: LOC-09/LOC-10/LOC-11 RANSAC pre-cleaning not implemented - always skipped
+        cleaned_rows, ransac_warning = _ransac_filter_rows(cluster_rows, calibration)
+        if ransac_warning:
+            run_warnings.append(f"Cluster {cluster_id}: {ransac_warning}")
         result = _localize_cluster(
             cluster_id=cluster_id,
             cluster_type=cluster_type_by_id[cluster_id],
-            rows=cluster_rows,
+            rows=cleaned_rows,
             calibration=calibration,
             cells=cells,
             shape=shape,
             grid_resolution_m=effective_resolution,
+            dynamic_sigma_alpha=dynamic_sigma_alpha,
+            confidence_cutoff=confidence_cutoff,
+            uncertainty_participation_floor=uncertainty_participation_floor,
+            uncertainty_alpha=uncertainty_alpha,
         )
         cluster_results.append(result)
 
@@ -85,6 +106,61 @@ def run_localization(
         "failed_clusters": failed,
         "warnings": run_warnings,
     }
+
+
+def _ransac_filter_rows(rows: list[dict], calibration: dict) -> tuple[list[dict], str | None]:
+    """
+    RANSAC-based outlier removal. Returns all rows if the deterministic
+    consensus pass cannot keep enough samples for localization.
+    """
+    if len(rows) < _LOC_RANSAC_MIN_SAMPLES:
+        return rows, None
+
+    rssi_at_1m = float(calibration["rssi_at_1m"])
+    path_loss_n = float(calibration["path_loss_n"])
+    best_inlier_mask: list[bool] = [True] * len(rows)
+    best_inlier_count = 0
+
+    import random
+
+    rng = random.Random(42)
+    for _ in range(_LOC_RANSAC_ITERATIONS):
+        sample_indices = rng.sample(range(len(rows)), _LOC_RANSAC_MIN_SAMPLES)
+        sample_lats = [float(rows[index]["gps_lat"]) for index in sample_indices]
+        sample_lons = [float(rows[index]["gps_lon"]) for index in sample_indices]
+        center_lat = sum(sample_lats) / len(sample_lats)
+        center_lon = sum(sample_lons) / len(sample_lons)
+        inlier_mask = []
+        inlier_count = 0
+        for row in rows:
+            dist = max(
+                _haversine_m(
+                    center_lat,
+                    center_lon,
+                    float(row["gps_lat"]),
+                    float(row["gps_lon"]),
+                ),
+                1.0,
+            )
+            predicted_rssi = rssi_at_1m - 10 * path_loss_n * math.log10(dist)
+            actual_rssi = float(row["rssi_dbm"])
+            is_inlier = abs(actual_rssi - predicted_rssi) < _LOC_RANSAC_INLIER_THRESHOLD_DB
+            inlier_mask.append(is_inlier)
+            if is_inlier:
+                inlier_count += 1
+        if inlier_count > best_inlier_count:
+            best_inlier_count = inlier_count
+            best_inlier_mask = inlier_mask
+        if inlier_count >= _LOC_RANSAC_EARLY_EXIT_INLIER_RATIO * len(rows):
+            break
+
+    cleaned = [row for row, keep in zip(rows, best_inlier_mask) if keep]
+    if len(cleaned) < _LOC_RANSAC_MIN_SAMPLES:
+        return rows, f"RANSAC found no valid inlier set for cluster; using all {len(rows)} samples"
+    removed = len(rows) - len(cleaned)
+    if removed > 0:
+        return cleaned, f"RANSAC removed {removed} outlier samples from cluster"
+    return cleaned, None
 
 
 def _load_rows(path: Path) -> list[dict[str, str]]:
@@ -177,6 +253,10 @@ def _localize_cluster(
     cells: list[tuple[float, float]],
     shape: tuple[int, int],
     grid_resolution_m: float,
+    dynamic_sigma_alpha: float,
+    confidence_cutoff: float,
+    uncertainty_participation_floor: float,
+    uncertainty_alpha: float,
 ) -> dict[str, Any]:
     score_map = [0.0 for _ in cells]
     rssi_at_1m = float(calibration["rssi_at_1m"])
@@ -190,7 +270,7 @@ def _localize_cluster(
         for index, (lat, lon) in enumerate(cells):
             distance = max(_haversine_m(sample_lat, sample_lon, lat, lon), 1.0)
             mu = rssi_at_1m - 10 * path_loss_n * math.log10(distance)
-            sigma_eff = max(sigma * (1 + _LOC_07_DYNAMIC_SIGMA_ALPHA * math.log10(distance)), 0.1)
+            sigma_eff = max(sigma * (1 + dynamic_sigma_alpha * math.log10(distance)), 0.1)
             score_map[index] += math.exp(-0.5 * ((rssi - mu) / sigma_eff) ** 2)
 
     max_score = max(score_map) if score_map else 0.0
@@ -199,13 +279,26 @@ def _localize_cluster(
     if max_score == 0:
         warnings.append("Zero score map - no usable contributions")
 
-    peak_indices = _find_peaks(posterior, shape)
+    peak_indices = _find_peaks(posterior, shape, confidence_cutoff)
     peaks = [{"lat": cells[index][0], "lon": cells[index][1], "value": posterior[index]} for index in peak_indices[:3]]
     if not peaks and posterior:
         index = max(range(len(posterior)), key=lambda item: posterior[item])
         peaks = [{"lat": cells[index][0], "lon": cells[index][1], "value": posterior[index]}]
 
-    regions = _merge_regions([_uncertainty_region(peak, cells, posterior, grid_resolution_m) for peak in peaks])
+    regions = _merge_regions(
+        [
+            _uncertainty_region(
+                peak,
+                cells,
+                posterior,
+                grid_resolution_m,
+                uncertainty_participation_floor,
+                uncertainty_alpha,
+                shape,
+            )
+            for peak in peaks
+        ]
+    )
     grid_cells = [
         {"lat": cells[index][0], "lon": cells[index][1], "value": posterior[index]}
         for index in sorted(range(len(posterior)), key=lambda item: posterior[item], reverse=True)[:500]
@@ -224,7 +317,7 @@ def _localize_cluster(
     }
 
 
-def _find_peaks(values: list[float], shape: tuple[int, int]) -> list[int]:
+def _find_peaks(values: list[float], shape: tuple[int, int], confidence_cutoff: float) -> list[int]:
     n_lat, n_lon = shape
     peaks = []
     for i in range(n_lat):
@@ -241,7 +334,7 @@ def _find_peaks(values: list[float], shape: tuple[int, int]) -> list[int]:
                         neighbours.append(values[ni * n_lon + nj])
                     else:
                         neighbours.append(0.0)
-            if all(current > neighbour for neighbour in neighbours) and current >= _LOC_08_CONFIDENCE_CUTOFF:
+            if all(current > neighbour for neighbour in neighbours) and current >= confidence_cutoff:
                 peaks.append(index)
     return sorted(peaks, key=lambda item: values[item], reverse=True)
 
@@ -251,22 +344,67 @@ def _uncertainty_region(
     cells: list[tuple[float, float]],
     posterior: list[float],
     grid_resolution_m: float,
+    participation_floor: float,
+    alpha: float,
+    shape: tuple[int, int] | None = None,
 ) -> dict[str, float]:
-    total = sum(posterior)
-    if total <= 0:
-        return {"center_lat": peak["lat"], "center_lon": peak["lon"], "radius_m": grid_resolution_m}
-    ordered = sorted(
-        range(len(cells)),
-        key=lambda index: _haversine_m(peak["lat"], peak["lon"], cells[index][0], cells[index][1]),
-    )
-    mass = 0.0
-    radius = grid_resolution_m
-    for index in ordered:
-        mass += posterior[index] / total
-        radius = _haversine_m(peak["lat"], peak["lon"], cells[index][0], cells[index][1])
-        if mass >= _LOC_12_UNCERTAINTY_TARGET_MASS_Q:
-            break
+    # Weighted spread: radius = alpha * sqrt( sum(w*d^2) / sum(w) ) over the
+    # high-posterior component that contains this peak. Using a peak-local component
+    # prevents a secondary peak from measuring distance to a different peak's high
+    # posterior cells when the floor is raised.
+    participating_indices = _peak_participating_indices(peak, cells, posterior, participation_floor, shape)
+    total_w = 0.0
+    sigma_sq = 0.0
+    for index in participating_indices:
+        lat, lon = cells[index]
+        w = posterior[index]
+        d = _haversine_m(peak["lat"], peak["lon"], lat, lon)
+        sigma_sq += w * d * d
+        total_w += w
+    if total_w == 0.0:
+        return {"center_lat": peak["lat"], "center_lon": peak["lon"], "radius_m": round(grid_resolution_m, 3)}
+    radius = max(alpha * math.sqrt(sigma_sq / total_w), grid_resolution_m)
     return {"center_lat": peak["lat"], "center_lon": peak["lon"], "radius_m": round(radius, 3)}
+
+
+def _peak_participating_indices(
+    peak: dict[str, float],
+    cells: list[tuple[float, float]],
+    posterior: list[float],
+    participation_floor: float,
+    shape: tuple[int, int] | None,
+) -> set[int]:
+    peak_index = _cell_index_for_peak(peak, cells)
+    if peak_index is None or posterior[peak_index] < participation_floor:
+        return set()
+    if shape is None:
+        return {index for index, value in enumerate(posterior) if value >= participation_floor}
+
+    n_lat, n_lon = shape
+    high_posterior = {index for index, value in enumerate(posterior) if value >= participation_floor}
+    component: set[int] = set()
+    stack = [peak_index]
+    while stack:
+        index = stack.pop()
+        if index in component or index not in high_posterior:
+            continue
+        component.add(index)
+        i, j = divmod(index, n_lon)
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                if di == 0 and dj == 0:
+                    continue
+                ni, nj = i + di, j + dj
+                if 0 <= ni < n_lat and 0 <= nj < n_lon:
+                    stack.append(ni * n_lon + nj)
+    return component
+
+
+def _cell_index_for_peak(peak: dict[str, float], cells: list[tuple[float, float]]) -> int | None:
+    for index, (lat, lon) in enumerate(cells):
+        if lat == peak["lat"] and lon == peak["lon"]:
+            return index
+    return None
 
 
 def _merge_regions(regions: list[dict[str, float]]) -> list[dict[str, float]]:

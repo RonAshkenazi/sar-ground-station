@@ -6,7 +6,14 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
-from app.modules.localization.engine import _LOC_06_GRID_RESOLUTION_M, _LOC_02_SEARCH_AREA_BUFFER_M
+from app.modules.localization.engine import (
+    _LOC_02_SEARCH_AREA_BUFFER_M,
+    _LOC_06_GRID_RESOLUTION_M,
+    _LOC_07_DYNAMIC_SIGMA_ALPHA,
+    _LOC_08_CONFIDENCE_CUTOFF,
+    _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
+    _LOC_UNCERTAINTY_ALPHA,
+)
 
 
 router = APIRouter()
@@ -21,6 +28,10 @@ class LocalizationRunRequest(BaseModel):
     manual_lon_min: float | None = None
     manual_lon_max: float | None = None
     grid_resolution_m: float | None = None
+    dynamic_sigma_alpha: float = _LOC_07_DYNAMIC_SIGMA_ALPHA
+    confidence_cutoff: float = _LOC_08_CONFIDENCE_CUTOFF
+    uncertainty_participation_floor: float = _LOC_UNCERTAINTY_PARTICIPATION_FLOOR
+    uncertainty_alpha: float = _LOC_UNCERTAINTY_ALPHA
 
 
 @router.post("/sessions/{session_id}/localization/run")
@@ -66,6 +77,10 @@ def run_localization_endpoint(
         body.buffer_m,
         manual_bounds,
         body.grid_resolution_m or _LOC_06_GRID_RESOLUTION_M,
+        body.dynamic_sigma_alpha,
+        body.confidence_cutoff,
+        body.uncertainty_participation_floor,
+        body.uncertainty_alpha,
     )
     return {"execution_id": execution_id, "status": "pending"}
 
@@ -79,6 +94,10 @@ def _run_localization_task(
     buffer_m: float,
     manual_bounds: dict | None,
     grid_resolution_m: float,
+    dynamic_sigma_alpha: float,
+    confidence_cutoff: float,
+    uncertainty_participation_floor: float = _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
+    uncertainty_alpha: float = _LOC_UNCERTAINTY_ALPHA,
 ) -> None:
     from app.api.executions import update_execution
     from app.modules.localization.engine import run_localization
@@ -93,6 +112,10 @@ def _run_localization_task(
             buffer_m=buffer_m,
             manual_bounds=manual_bounds,
             grid_resolution_m=grid_resolution_m,
+            dynamic_sigma_alpha=dynamic_sigma_alpha,
+            confidence_cutoff=confidence_cutoff,
+            uncertainty_participation_floor=uncertainty_participation_floor,
+            uncertainty_alpha=uncertainty_alpha,
         )
         session = get_session(session_id)
         if session is not None:

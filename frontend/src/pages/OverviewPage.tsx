@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { CircleMarker, MapContainer, TileLayer, Tooltip } from 'react-leaflet'
 import { getInventory, runOverview, type OverviewResult } from '../api/sessions'
 import { useSession } from '../state/SessionContext'
 import './OverviewPage.css'
 
 type MapLayer = 'satellite' | 'osm'
+type SortColumn = 'src_mac' | 'packet_count' | 'rssi_mean'
+type DeviceRow = OverviewResult['device_table'][number]
+type GpsPoint = OverviewResult['gps_points'][number]
 
 export default function OverviewPage() {
   const { session } = useSession()
@@ -15,6 +18,15 @@ export default function OverviewPage() {
   const [error, setError] = useState<string | null>(null)
   const [mapLayer, setMapLayer] = useState<MapLayer>('satellite')
   const [showHeartbeats, setShowHeartbeats] = useState(true)
+  const [filtersOpen, setFiltersOpen] = useState(true)
+  const [filterRssiMin, setFilterRssiMin] = useState<string>('')
+  const [filterRssiMax, setFilterRssiMax] = useState<string>('')
+  const [filterMacPrefix, setFilterMacPrefix] = useState('')
+  const [filterMinPackets, setFilterMinPackets] = useState<string>('')
+  const [filterTimeStart, setFilterTimeStart] = useState('')
+  const [filterTimeEnd, setFilterTimeEnd] = useState('')
+  const [sortColumn, setSortColumn] = useState<SortColumn>('packet_count')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
   useEffect(() => {
     if (!session?.session_id) {
@@ -51,15 +63,80 @@ export default function OverviewPage() {
   }
 
   const allPoints = overview?.gps_points ?? []
-  const visiblePoints = showHeartbeats
-    ? allPoints
-    : allPoints.filter((p) => p.frame_type !== 'heartbeat')
+  const visiblePoints = useMemo(
+    () => (showHeartbeats ? allPoints : allPoints.filter((p) => p.frame_type !== 'heartbeat')),
+    [allPoints, showHeartbeats],
+  )
 
-  const mapCenter: [number, number] = visiblePoints.length
-    ? [visiblePoints[0].lat, visiblePoints[0].lon]
+  const pointFilteredMacs = useMemo(() => {
+    if (!filterTimeStart && !filterTimeEnd) return null
+    return new Set(
+      allPoints
+        .filter((point) => isPointInTimeRange(point, filterTimeStart, filterTimeEnd))
+        .map((point) => point.src_mac),
+    )
+  }, [allPoints, filterTimeStart, filterTimeEnd])
+
+  const filteredDevices = useMemo(() => {
+    let rows = (overview?.device_table ?? []).filter((row) => passesDeviceFilters(row, {
+      macPrefix: filterMacPrefix,
+      minPackets: filterMinPackets,
+      rssiMin: filterRssiMin,
+      rssiMax: filterRssiMax,
+    }))
+    if (pointFilteredMacs) rows = rows.filter((row) => pointFilteredMacs.has(row.src_mac))
+    rows = [...rows].sort((a, b) => {
+      const comparison = compareDevices(a, b, sortColumn)
+      return sortDir === 'asc' ? comparison : -comparison
+    })
+    return rows
+  }, [overview, filterMacPrefix, filterMinPackets, filterRssiMin, filterRssiMax, pointFilteredMacs, sortColumn, sortDir])
+
+  const filteredDeviceMacs = useMemo(
+    () => new Set(filteredDevices.map((row) => row.src_mac)),
+    [filteredDevices],
+  )
+
+  const filteredPoints = useMemo(() => {
+    return visiblePoints.filter((point) => {
+      if (!filteredDeviceMacs.has(point.src_mac)) return false
+      if (!passesPointFilters(point, { macPrefix: filterMacPrefix, rssiMin: filterRssiMin, rssiMax: filterRssiMax })) {
+        return false
+      }
+      return isPointInTimeRange(point, filterTimeStart, filterTimeEnd)
+    })
+  }, [visiblePoints, filteredDeviceMacs, filterMacPrefix, filterRssiMin, filterRssiMax, filterTimeStart, filterTimeEnd])
+
+  const mapCenter: [number, number] = filteredPoints.length
+    ? [filteredPoints[0].lat, filteredPoints[0].lon]
     : allPoints.length
       ? [allPoints[0].lat, allPoints[0].lon]
       : [32.0, 34.8]
+
+  function clearFilters() {
+    setFilterRssiMin('')
+    setFilterRssiMax('')
+    setFilterMacPrefix('')
+    setFilterMinPackets('')
+    setFilterTimeStart('')
+    setFilterTimeEnd('')
+    setSortColumn('packet_count')
+    setSortDir('desc')
+  }
+
+  function handleSort(column: SortColumn) {
+    if (sortColumn === column) {
+      setSortDir((value) => (value === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortColumn(column)
+      setSortDir(column === 'src_mac' ? 'asc' : 'desc')
+    }
+  }
+
+  function sortIndicator(column: SortColumn) {
+    if (sortColumn !== column) return ''
+    return sortDir === 'asc' ? ' ^' : ' v'
+  }
 
   return (
     <div className="overview-page">
@@ -118,34 +195,102 @@ export default function OverviewPage() {
             </div>
 
             <div className="panel">
-              <h2 className="panel-title">Devices</h2>
+              <div className="panel-title-row">
+                <h2 className="panel-title">Devices</h2>
+                <button className="filter-toggle" type="button" onClick={() => setFiltersOpen((value) => !value)}>
+                  Filters {filtersOpen ? '^' : 'v'}
+                </button>
+              </div>
+              {filtersOpen && (
+                <div className="filter-bar">
+                  <label>
+                    MAC prefix
+                    <input type="text" value={filterMacPrefix} onChange={(event) => setFilterMacPrefix(event.target.value)} />
+                  </label>
+                  <label>
+                    Min packets
+                    <input type="number" value={filterMinPackets} onChange={(event) => setFilterMinPackets(event.target.value)} />
+                  </label>
+                  <label>
+                    RSSI min
+                    <input type="number" value={filterRssiMin} onChange={(event) => setFilterRssiMin(event.target.value)} />
+                  </label>
+                  <label>
+                    RSSI max
+                    <input type="number" value={filterRssiMax} onChange={(event) => setFilterRssiMax(event.target.value)} />
+                  </label>
+                  <label>
+                    Time from
+                    <input type="text" value={filterTimeStart} onChange={(event) => setFilterTimeStart(event.target.value)} />
+                  </label>
+                  <label>
+                    Time to
+                    <input type="text" value={filterTimeEnd} onChange={(event) => setFilterTimeEnd(event.target.value)} />
+                  </label>
+                  <label>
+                    Sort by
+                    <select value={sortColumn} onChange={(event) => setSortColumn(event.target.value as SortColumn)}>
+                      <option value="packet_count">Packets</option>
+                      <option value="src_mac">MAC Address</option>
+                      <option value="rssi_mean">RSSI Mean</option>
+                    </select>
+                  </label>
+                  <label>
+                    Direction
+                    <select value={sortDir} onChange={(event) => setSortDir(event.target.value as 'asc' | 'desc')}>
+                      <option value="desc">Descending</option>
+                      <option value="asc">Ascending</option>
+                    </select>
+                  </label>
+                  <button className="btn-secondary clear-filters" type="button" onClick={clearFilters}>
+                    Clear filters
+                  </button>
+                </div>
+              )}
               {overview.device_table.length === 0 ? (
                 <p className="empty-state">No devices found in this CSV.</p>
               ) : (
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>MAC Address</th>
-                      <th>Packets</th>
-                      <th>RSSI Min</th>
-                      <th>RSSI Max</th>
-                      <th>RSSI Mean</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {overview.device_table.map((row) => (
-                      <tr key={row.src_mac || 'unknown-mac'}>
-                        <td className="mono" dir="ltr">
-                          {row.src_mac || '-'}
-                        </td>
-                        <td>{row.packet_count}</td>
-                        <td>{row.rssi_min ?? '-'}</td>
-                        <td>{row.rssi_max ?? '-'}</td>
-                        <td>{row.rssi_mean ?? '-'}</td>
+                <>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>
+                          <button className="sort-header" type="button" onClick={() => handleSort('src_mac')}>
+                            MAC Address{sortIndicator('src_mac')}
+                          </button>
+                        </th>
+                        <th>
+                          <button className="sort-header" type="button" onClick={() => handleSort('packet_count')}>
+                            Packets{sortIndicator('packet_count')}
+                          </button>
+                        </th>
+                        <th>RSSI Min</th>
+                        <th>RSSI Max</th>
+                        <th>
+                          <button className="sort-header" type="button" onClick={() => handleSort('rssi_mean')}>
+                            RSSI Mean{sortIndicator('rssi_mean')}
+                          </button>
+                        </th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {filteredDevices.map((row) => (
+                        <tr key={row.src_mac || 'unknown-mac'}>
+                          <td className="mono" dir="ltr">
+                            {row.src_mac || '-'}
+                          </td>
+                          <td>{row.packet_count}</td>
+                          <td>{row.rssi_min ?? '-'}</td>
+                          <td>{row.rssi_max ?? '-'}</td>
+                          <td>{row.rssi_mean ?? '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="row-count-hint">
+                    Showing {filteredDevices.length.toLocaleString()} of {overview.device_table.length.toLocaleString()} devices
+                  </div>
+                </>
               )}
             </div>
           </div>
@@ -197,7 +342,7 @@ export default function OverviewPage() {
                       maxZoom={20}
                     />
                   )}
-                  {visiblePoints.map((point, index) => (
+                  {filteredPoints.map((point, index) => (
                     <CircleMarker
                       key={`${point.timestamp_utc}-${point.src_mac}-${index}`}
                       center={[point.lat, point.lon]}
@@ -244,4 +389,42 @@ function rssiToColor(rssi: number | null): string {
   if (rssi > -60) return '#15803d'
   if (rssi > -75) return '#b45309'
   return '#b91c1c'
+}
+
+function passesDeviceFilters(
+  row: DeviceRow,
+  filters: { macPrefix: string; minPackets: string; rssiMin: string; rssiMax: string },
+): boolean {
+  if (filters.macPrefix && !row.src_mac?.toLowerCase().startsWith(filters.macPrefix.toLowerCase())) return false
+  if (filters.minPackets !== '' && row.packet_count < Number(filters.minPackets)) return false
+  if (filters.rssiMin !== '' && (row.rssi_mean == null || row.rssi_mean < Number(filters.rssiMin))) return false
+  if (filters.rssiMax !== '' && (row.rssi_mean == null || row.rssi_mean > Number(filters.rssiMax))) return false
+  return true
+}
+
+function passesPointFilters(
+  point: GpsPoint,
+  filters: { macPrefix: string; rssiMin: string; rssiMax: string },
+): boolean {
+  if (filters.macPrefix && !point.src_mac?.toLowerCase().startsWith(filters.macPrefix.toLowerCase())) return false
+  if (filters.rssiMin !== '' && (point.rssi == null || point.rssi < Number(filters.rssiMin))) return false
+  if (filters.rssiMax !== '' && (point.rssi == null || point.rssi > Number(filters.rssiMax))) return false
+  return true
+}
+
+function isPointInTimeRange(point: GpsPoint, start: string, end: string): boolean {
+  if (start && point.timestamp_utc < start) return false
+  if (end && point.timestamp_utc > end) return false
+  return true
+}
+
+function compareDevices(a: DeviceRow, b: DeviceRow, column: SortColumn): number {
+  if (column === 'src_mac') return (a.src_mac || '').localeCompare(b.src_mac || '')
+
+  const av = a[column]
+  const bv = b[column]
+  if (av == null && bv == null) return 0
+  if (av == null) return 1
+  if (bv == null) return -1
+  return av - bv
 }

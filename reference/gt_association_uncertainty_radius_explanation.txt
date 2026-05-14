@@ -1,0 +1,489 @@
+Ground Truth Association and Uncertainty Radius Logic
+=====================================================
+
+Goal
+----
+
+The Result Analysis module should evaluate localized emitters against known Ground Truth (GT) points in a mathematically consistent way.
+
+Each predicted emitter/cluster should contain:
+
+    cluster_id
+    x_hat
+    y_hat
+    uncertainty_radius
+    confidence
+    num_samples
+    protocol
+    optional: localization_score / heatmap_peak_score
+
+Each GT point should contain:
+
+    gt_id
+    x
+    y
+    optional: device_label
+    optional: protocol / expected device type
+
+The system must answer two separate questions:
+
+1. Localization quality:
+   How accurate and well-calibrated is the predicted position and uncertainty radius?
+
+2. Association quality:
+   Which predicted cluster corresponds to which GT device, and is this association clear or ambiguous?
+
+These two questions must not be mixed. A large uncertainty radius should represent localization uncertainty, not a workaround for bad Re-ID or duplicate clusters.
+
+
+1. Localization Uncertainty Radius
+----------------------------------
+
+For each predicted cluster C_i, the localization module estimates a position:
+
+    x_hat_i = (x_hat_i, y_hat_i)
+
+This point is usually the MAP estimate, meaning the location with maximum posterior likelihood:
+
+    x_hat_i = argmax_x P(x | Z_i)
+
+where Z_i is the set of RSSI/GPS/timestamp measurements assigned to cluster C_i.
+
+The uncertainty radius r_i should describe the spatial uncertainty of this specific cluster. It should not be a fixed arbitrary value.
+
+A practical implementation can use one of the following approaches.
+
+
+Option A - Probability-mass based radius
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If the localization algorithm produces a heatmap/posterior distribution:
+
+    P(x | Z_i)
+
+then define the uncertainty region as the smallest high-probability region containing a target probability mass, for example 90%:
+
+    R_i^90 = {x : x belongs to the 90% highest posterior mass region}
+
+The displayed uncertainty radius can be:
+
+    r_i = max_{x in R_i^90} ||x - x_hat_i||
+
+This means the circle around the predicted emitter contains the 90% posterior region.
+
+
+Option B - Spread-based radius
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If the implementation only has weighted grid scores, compute the weighted spread around the predicted peak:
+
+    sigma_i^2 = sum_x P(x | Z_i) * ||x - x_hat_i||^2
+
+Then:
+
+    r_i = alpha * sigma_i
+
+where alpha is calibrated from experiments with known GT.
+
+
+Calibration requirement
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The radius should be calibrated using field experiments:
+
+    e_i = ||x_hat_i - GT_i||
+
+Choose the scaling factor or confidence threshold so that approximately 90% of matched GT points fall inside their predicted uncertainty circles:
+
+    P(e_i <= r_i) ≈ 0.9
+
+This separates:
+
+    Accuracy  = how close the predicted point is to the GT.
+    Coverage  = whether the GT lies inside the uncertainty circle.
+    Sharpness = how small/tight the uncertainty radius is.
+
+A model with huge radii may have good coverage but bad sharpness.
+A model with tiny radii may look precise but fail calibration.
+
+
+2. Candidate Association Between Clusters and GT
+------------------------------------------------
+
+For each predicted cluster C_i and each GT point G_j, compute the Euclidean distance:
+
+    d_ij = ||x_hat_i - G_j||
+
+Then compute an association cost.
+
+A simple cost:
+
+    cost_ij = d_ij
+
+A better normalized cost:
+
+    cost_ij = d_ij / max(r_i, r_min)
+
+An even better cost can include confidence and radius penalty:
+
+    cost_ij = d_ij / max(r_i, r_min)
+              + lambda_r * (r_i / r_max)
+              - lambda_c * confidence_i
+
+This favors clusters that are close, sharp, and confident.
+
+
+3. Matching Gate
+----------------
+
+Not every cluster-GT pair should be allowed.
+
+Define a matching gate:
+
+    d_ij <= R_match
+
+or:
+
+    d_ij <= max(r_i, R_min)
+
+Example:
+
+    R_match = max(r_i, 10m)
+
+This gate only means:
+
+    This cluster is spatially plausible for this GT.
+
+It does not yet mean it is the final selected match.
+
+
+4. Primary One-to-One Matching
+------------------------------
+
+For clean evaluation metrics, the final GT assignment should use a global one-to-one matching algorithm, such as Hungarian matching / minimum-cost bipartite matching.
+
+This prevents double-counting.
+
+Each GT can have at most one primary matched cluster.
+Each predicted cluster can have at most one primary matched GT.
+
+This is important because otherwise a single GT could be counted multiple times by multiple nearby clusters, falsely improving recall.
+
+The result of this stage is:
+
+    primary_matches = [(cluster_id, gt_id, distance, cost)]
+    unmatched_clusters = false positives
+    unmatched_gt = false negatives
+
+
+5. Ambiguity Handling
+---------------------
+
+The system should not throw away information about secondary candidates.
+
+After the primary matching, for each GT G_j, collect all candidate clusters that passed the matching gate:
+
+    Candidates(G_j) = {C_i : d_ij <= R_match}
+
+Sort them by association cost.
+
+Let:
+
+    best = lowest-cost candidate
+    second = second-lowest-cost candidate
+
+Define a dominance margin:
+
+    Delta = cost_second - cost_best
+
+or a ratio:
+
+    rho = cost_second / cost_best
+
+Then classify the association.
+
+
+Clear single match
+~~~~~~~~~~~~~~~~~~
+
+If the best cluster is much better than the second-best cluster:
+
+    cost_second - cost_best >= delta_min
+
+or:
+
+    cost_second / cost_best >= ratio_min
+
+then:
+
+    association_status = "clear_match"
+
+Example:
+
+    GT_1:
+      Cluster_7 distance = 3.1m
+      Cluster_2 distance = 13.8m
+
+    Result:
+      Cluster_7 is clearly the matching emitter.
+
+
+Ambiguous match
+~~~~~~~~~~~~~~~
+
+If two or more clusters have similar association costs:
+
+    cost_second - cost_best < delta_min
+
+then:
+
+    association_status = "ambiguous_match"
+
+This means:
+
+    The system cannot confidently determine which cluster corresponds to the GT.
+
+It does not automatically mean two real emitters were detected.
+
+Example:
+
+    GT_1:
+      Cluster_7 distance = 4.2m
+      Cluster_2 distance = 4.9m
+
+    Result:
+      Primary match = Cluster_7
+      Secondary candidate = Cluster_2
+      Association status = ambiguous_match
+
+
+6. Duplicate / Over-Splitting Case
+----------------------------------
+
+If one GT has multiple nearby candidate clusters, but there is only one known GT device in that area, this is likely a Re-ID over-splitting error.
+
+Example:
+
+    GT_1:
+      Cluster_3 distance = 3.0m
+      Cluster_8 distance = 3.8m
+      Cluster_11 distance = 5.1m
+
+The correct interpretation is:
+
+    primary_match = best cluster
+    other nearby candidates = duplicate_predictions / possible_over_split
+
+This should hurt precision, because the system produced too many emitters for one real device.
+
+Do not count this as detecting multiple real emitters unless the GT data or cluster evidence supports multiple physical sources.
+
+
+7. Merge / Under-Splitting Case
+-------------------------------
+
+The opposite problem occurs when one predicted cluster is close to multiple GT points.
+
+Example:
+
+    Cluster_4:
+      distance to GT_1 = 4.0m
+      distance to GT_2 = 5.2m
+
+Since one cluster cannot represent two separate physical emitters unless explicitly modeled as a multi-emitter cluster, the matching should assign it to only one GT.
+
+The other GT should be marked as:
+
+    missed_gt
+    possible_merge_error
+    under_split
+
+This means the system merged evidence from multiple real devices into one cluster.
+
+
+8. When Can We Say Two Emitters Were Detected?
+----------------------------------------------
+
+Two nearby clusters should be reported as two real emitters only if there is enough evidence that they represent two independent physical devices.
+
+Recommended conditions:
+
+    1. Both clusters have enough samples.
+    2. Both clusters have sufficient confidence.
+    3. Their localization peaks are separated by more than the system resolution.
+    4. Their uncertainty circles are not almost fully overlapping, or their feature/time patterns are meaningfully different.
+    5. If GT is available: there are two GT points in the same area, and one-to-one matching assigns one cluster to each GT.
+
+A possible separation rule:
+
+    ||x_hat_a - x_hat_b|| > eta * min(r_a, r_b)
+
+or:
+
+    ||x_hat_a - x_hat_b|| > R_resolution
+
+Example:
+
+    R_resolution = 5m
+    eta = 1.0
+
+If the two clusters are too close and their uncertainty circles strongly overlap, they should be treated as:
+
+    ambiguous / duplicate / possible over-split
+
+not automatically as two emitters.
+
+
+9. Should Ambiguity Increase the Radius?
+----------------------------------------
+
+Do not directly inflate the localization radius because another cluster is similarly close to the GT.
+
+Reason:
+
+    Localization uncertainty answers:
+    "Where is this cluster/emitter?"
+
+    Association uncertainty answers:
+    "Which cluster corresponds to this GT?"
+
+These are different uncertainties.
+
+However, the UI may optionally display an operational ambiguity region.
+
+For example, if two clusters are plausible candidates for the same GT, define:
+
+    association_candidates = [Cluster_7, Cluster_2]
+    association_status = ambiguous_match
+
+Then the UI can either:
+
+    1. Show both candidate circles.
+    2. Show the primary circle with a warning.
+    3. Show a combined ambiguity envelope covering both candidate centers and radii.
+
+A combined operational radius could be:
+
+    r_op = max_k ( ||x_hat_k - x_hat_primary|| + r_k )
+
+where k runs over the ambiguous candidate clusters.
+
+But this should be named clearly:
+
+    operational_ambiguity_radius
+
+not:
+
+    localization_uncertainty_radius
+
+
+10. Recommended Implementation Contract
+---------------------------------------
+
+Input:
+
+    predictions = [
+        {
+            "cluster_id": str,
+            "x": float,
+            "y": float,
+            "radius": float,
+            "confidence": float,
+            "num_samples": int,
+            "protocol": "BLE" | "WiFi"
+        }
+    ]
+
+    ground_truth = [
+        {
+            "gt_id": str,
+            "x": float,
+            "y": float,
+            "label": str | None
+        }
+    ]
+
+Output:
+
+    {
+        "matches": [
+            {
+                "gt_id": str,
+                "primary_cluster_id": str,
+                "distance": float,
+                "covered": bool,
+                "association_status": "clear_match" | "ambiguous_match",
+                "secondary_candidates": [
+                    {
+                        "cluster_id": str,
+                        "distance": float,
+                        "cost": float
+                    }
+                ]
+            }
+        ],
+        "false_positives": [...],
+        "false_negatives": [...],
+        "duplicates": [...],
+        "possible_merges": [...],
+        "metrics": {
+            "recall": float,
+            "precision": float,
+            "coverage": float,
+            "median_error": float,
+            "p90_error": float,
+            "median_radius": float,
+            "count_error": int
+        }
+    }
+
+
+11. Recommended Algorithm
+-------------------------
+
+1. For every prediction and GT, compute distance d_ij.
+
+2. Remove impossible pairs using a matching gate:
+
+       d_ij <= R_match
+
+3. Compute association cost for every valid pair.
+
+4. Run global one-to-one Hungarian matching to select primary matches.
+
+5. For every matched GT:
+   - Store the primary cluster.
+   - Store all secondary candidate clusters that also passed the gate.
+   - Compare best and second-best costs.
+   - Mark as clear_match or ambiguous_match.
+
+6. For every matched pair:
+   - localization_error = distance between cluster and GT.
+   - covered = localization_error <= uncertainty_radius.
+
+7. Unmatched GT points are false negatives.
+
+8. Unmatched clusters are false positives.
+
+9. Clusters that were candidates for an already matched GT but lost the assignment are possible duplicates / over-splits.
+
+10. A cluster that is a candidate for multiple GTs may indicate a merge / under-split.
+
+
+12. Final Design Decision
+-------------------------
+
+Use one-to-one matching for the final primary evaluation assignment.
+Keep multiple candidate associations for ambiguity analysis.
+Do not count multiple nearby clusters as multiple detected emitters unless there is independent evidence that they represent different physical emitters.
+Do not inflate the localization radius to hide association ambiguity.
+Represent association ambiguity explicitly using a separate status and optional operational ambiguity region.
+
+This gives a clean and defensible evaluation model:
+
+    Localization error tells how close the prediction is.
+    Coverage tells whether the uncertainty circle is calibrated.
+    Sharpness tells whether the radius is useful or too large.
+    Matching status tells whether the GT-to-cluster association is clear or ambiguous.
+    Duplicate/merge flags tell whether Re-ID split or merged devices incorrectly.
+

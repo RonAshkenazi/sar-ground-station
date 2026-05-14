@@ -30,6 +30,13 @@ export default function ReIdEnrichmentPage() {
   const [reidLoading, setReidLoading] = useState(false)
   const [reidActivating, setReidActivating] = useState(false)
   const [reidActivationMessage, setReidActivationMessage] = useState('')
+  const [reidSettings, setReidSettings] = useState({
+    association_threshold: 0.8,
+    seq_gap_max: 64,
+    time_gap_max_sec: 30,
+    burst_window_sec: 60,
+    probe_requests_only: false,
+  })
 
   useEffect(() => {
     if (!session?.session_id) {
@@ -180,7 +187,7 @@ export default function ReIdEnrichmentPage() {
     setReidQuality(null)
     setReidExecution(null)
     try {
-      const started = await runReid(session.session_id, selectedEnriched)
+      const started = await runReid(session.session_id, selectedEnriched, reidSettings)
       setReidExecution({
         execution_id: started.execution_id,
         status: started.status as ExecutionStatus['status'],
@@ -344,6 +351,72 @@ export default function ReIdEnrichmentPage() {
 
         {reidActivationMessage && <div className="success-banner">{reidActivationMessage}</div>}
 
+        <div className="settings-panel">
+          <h3 className="panel-title">Re-ID Settings</h3>
+          <div className="settings-grid">
+            <label>
+              Association
+              <select
+                value={reidSettings.association_threshold}
+                onChange={(event) =>
+                  setReidSettings((previous) => ({ ...previous, association_threshold: Number(event.target.value) }))
+                }
+              >
+                <option value={0.75}>0.75</option>
+                <option value={0.8}>0.80</option>
+                <option value={0.9}>0.90</option>
+              </select>
+            </label>
+            <label>
+              Seq gap
+              <select
+                value={reidSettings.seq_gap_max}
+                onChange={(event) => setReidSettings((previous) => ({ ...previous, seq_gap_max: Number(event.target.value) }))}
+              >
+                <option value={50}>50</option>
+                <option value={64}>64</option>
+                <option value={128}>128</option>
+              </select>
+            </label>
+            <label>
+              Time gap
+              <select
+                value={reidSettings.time_gap_max_sec}
+                onChange={(event) =>
+                  setReidSettings((previous) => ({ ...previous, time_gap_max_sec: Number(event.target.value) }))
+                }
+              >
+                <option value={10}>10s</option>
+                <option value={30}>30s</option>
+                <option value={60}>60s</option>
+              </select>
+            </label>
+            <label>
+              Burst window
+              <select
+                value={reidSettings.burst_window_sec}
+                onChange={(event) =>
+                  setReidSettings((previous) => ({ ...previous, burst_window_sec: Number(event.target.value) }))
+                }
+              >
+                <option value={30}>30s</option>
+                <option value={60}>60s</option>
+                <option value={120}>120s</option>
+              </select>
+            </label>
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={reidSettings.probe_requests_only}
+                onChange={(event) =>
+                  setReidSettings((previous) => ({ ...previous, probe_requests_only: event.target.checked }))
+                }
+              />
+              Probe requests only
+            </label>
+          </div>
+        </div>
+
         <button className="btn-primary" disabled={!canReid} onClick={handleRunReid}>
           {reidRunning ? 'Re-ID running...' : 'Run Re-ID'}
         </button>
@@ -362,10 +435,12 @@ export default function ReIdEnrichmentPage() {
               <dd>{reidQuality.total_rows.toLocaleString()}</dd>
               <dt>Static clusters</dt>
               <dd>{reidQuality.static_cluster_count.toLocaleString()}</dd>
+              <dt>Unique dynamic MACs</dt>
+              <dd>{reidQuality.unique_dynamic_mac_count?.toLocaleString() ?? '-'}</dd>
               <dt>Dynamic clusters</dt>
               <dd>{reidQuality.dynamic_cluster_count.toLocaleString()}</dd>
-              <dt>Singleton dynamic</dt>
-              <dd>{reidQuality.singleton_dynamic_count.toLocaleString()}</dd>
+              <dt>Noise clusters</dt>
+              <dd>{reidQuality.noise_cluster_count.toLocaleString()}</dd>
             </dl>
             {reidQuality.warnings.map((warning) => (
               <div key={warning} className="warning-banner">

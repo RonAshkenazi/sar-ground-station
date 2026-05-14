@@ -30,7 +30,22 @@ export default function LocalizationPage() {
   const [showHeatmap, setShowHeatmap] = useState(true)
   const [showUncertaintyRadii, setShowUncertaintyRadii] = useState(true)
   const [showPeaks, setShowPeaks] = useState(true)
+  const [showStaticClusters, setShowStaticClusters] = useState(true)
+  const [showNoiseClusters, setShowNoiseClusters] = useState(true)
   const [hiddenClusters, setHiddenClusters] = useState<Set<string>>(new Set())
+  const [settingsOpen, setSettingsOpen] = useState(true)
+  const [locSettings, setLocSettings] = useState({
+    dynamic_sigma_alpha: 0.05,
+    confidence_cutoff: 0.5,
+    uncertainty_participation_floor: 0.5,
+    uncertainty_alpha: 2.0,
+  })
+
+  function confidenceBadge(tier: string | undefined) {
+    if (!tier) return null
+    const cls = tier === 'high' ? 'conf-high' : tier === 'medium' ? 'conf-medium' : 'conf-low'
+    return <span className={`conf-badge ${cls}`}>{tier}</span>
+  }
 
   useEffect(() => {
     setInventory(null)
@@ -92,8 +107,14 @@ export default function LocalizationPage() {
     ? [(result.bounds.lat_min + result.bounds.lat_max) / 2, (result.bounds.lon_min + result.bounds.lon_max) / 2]
     : [32.0, 34.8]
   const visibleClusters = useMemo(
-    () => (result?.cluster_results ?? []).filter((cluster) => !hiddenClusters.has(cluster.cluster_id)),
-    [result, hiddenClusters],
+    () =>
+      (result?.cluster_results ?? []).filter((cluster) => {
+        if (hiddenClusters.has(cluster.cluster_id)) return false
+        if (!showStaticClusters && cluster.cluster_type === 'static') return false
+        if (!showNoiseClusters && cluster.cluster_type === 'noise') return false
+        return true
+      }),
+    [result, hiddenClusters, showStaticClusters, showNoiseClusters],
   )
 
   async function handleRun() {
@@ -105,6 +126,10 @@ export default function LocalizationPage() {
       const started = await runLocalization(session.session_id, {
         reid_csv_filename: selectedReid,
         bounds_mode: 'auto_track_plus_buffer',
+        dynamic_sigma_alpha: locSettings.dynamic_sigma_alpha,
+        confidence_cutoff: locSettings.confidence_cutoff,
+        uncertainty_participation_floor: locSettings.uncertainty_participation_floor,
+        uncertainty_alpha: locSettings.uncertainty_alpha,
       })
       setExecution({
         execution_id: started.execution_id,
@@ -172,6 +197,72 @@ export default function LocalizationPage() {
               : 'No calibration'}
           </div>
 
+          <div className="settings-panel">
+            <button className="settings-toggle-button" type="button" onClick={() => setSettingsOpen((value) => !value)}>
+              Localization Settings {settingsOpen ? 'v' : '>'}
+            </button>
+            {settingsOpen && (
+              <div className="localization-settings-grid">
+                <label className="loc-param-row">
+                  dynamic_sigma_alpha
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={locSettings.dynamic_sigma_alpha}
+                    onChange={(event) =>
+                      setLocSettings((previous) => ({
+                        ...previous,
+                        dynamic_sigma_alpha: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="loc-param-row">
+                  confidence_cutoff
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={locSettings.confidence_cutoff}
+                    onChange={(event) =>
+                      setLocSettings((previous) => ({
+                        ...previous,
+                        confidence_cutoff: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="loc-param-row">
+                  participation_floor
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={locSettings.uncertainty_participation_floor}
+                    onChange={(event) =>
+                      setLocSettings((previous) => ({
+                        ...previous,
+                        uncertainty_participation_floor: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="loc-param-row">
+                  uncertainty_alpha
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={locSettings.uncertainty_alpha}
+                    onChange={(event) =>
+                      setLocSettings((previous) => ({
+                        ...previous,
+                        uncertainty_alpha: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+            )}
+          </div>
+
           <button className="btn-primary" disabled={!canRun} onClick={handleRun}>
             {running ? 'Localization running...' : 'Run Localization'}
           </button>
@@ -208,6 +299,8 @@ export default function LocalizationPage() {
                     <th>Status</th>
                     <th>Samples</th>
                     <th>Peaks</th>
+                    <th>Radius (m)</th>
+                    <th>Confidence</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -235,6 +328,14 @@ export default function LocalizationPage() {
                       <td>{cluster.status}</td>
                       <td>{cluster.sample_count}</td>
                       <td>{cluster.candidate_peaks.length}</td>
+                      <td>{cluster.uncertainty_regions[0]?.radius_m.toFixed(1) ?? '-'}</td>
+                      <td>
+                        {cluster.cluster_type === 'static' ? (
+                          <span className="conf-badge conf-static">static</span>
+                        ) : (
+                          confidenceBadge(session?.active_reid?.quality?.cluster_confidence?.[cluster.cluster_id])
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -244,6 +345,24 @@ export default function LocalizationPage() {
         </div>
 
         <div className="localization-right">
+          <div className="map-toggles">
+            <label>
+              <input
+                type="checkbox"
+                checked={showStaticClusters}
+                onChange={(event) => setShowStaticClusters(event.target.checked)}
+              />
+              Show static clusters
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={showNoiseClusters}
+                onChange={(event) => setShowNoiseClusters(event.target.checked)}
+              />
+              Show noise cluster
+            </label>
+          </div>
           <div className="map-controls">
             <label className="map-control-check">
               <input type="checkbox" checked={showHeatmap} onChange={(e) => setShowHeatmap(e.target.checked)} />
