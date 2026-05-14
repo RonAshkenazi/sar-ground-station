@@ -1,101 +1,105 @@
-# Codex Result - Sprint 03: Confidence Tier Visibility + Pipeline QA
+# Codex Result - Air Unit Page + Smart Flight Guidance
 
 Date: 2026-05-14
 
-## Worker A - Backend / Algorithm
+## Worker A - Backend
 
-Changed:
-- `backend/app/modules/reid/engine.py`
-  - Added `cluster_confidence` to the `run_reid` return payload.
-  - Excludes singleton/noise clusters from the confidence map.
+Created:
+- `backend/app/modules/guidance/__init__.py`
+- `backend/app/modules/guidance/config.py`
+- `backend/app/modules/guidance/models.py`
+- `backend/app/modules/guidance/grid.py`
+- `backend/app/modules/guidance/scoring.py`
+- `backend/app/modules/guidance/state.py`
+- `backend/app/modules/guidance/recommendation.py`
+- `backend/app/modules/guidance/engine.py`
+- `backend/app/modules/guidance/logger.py`
+- `backend/app/api/guidance.py`
+- `backend/app/api/airunit.py`
+
+Modified:
 - `backend/tests/unit/test_skeleton.py`
-  - Added coverage for `cluster_confidence` tier strings and noise exclusion.
 
-Verification:
-- `cd backend && python -m pytest tests/unit/ -x -q`
-- Result: `110 passed, 1 warning`
-- Warning: existing pytest warning for unknown config option `asyncio_mode`.
+Implemented:
+- Smart guidance grid, scoring, state ingestion, recommendation engine, and history logger.
+- Air Unit relay backend with Pi websocket, frontend websocket, command forwarding, status, file listing, and file download proxy.
+- Guidance API endpoints:
+  - `POST /api/guidance/init`
+  - `POST /api/guidance/reset`
+  - `GET /api/guidance/recommendation`
+  - `GET /api/guidance/grid`
+  - `POST /api/guidance/update`
+- 11 guidance unit tests.
+
+Worker verification:
+- `python -m py_compile` passed for all new backend files.
+- `python -m pytest tests/unit/test_skeleton.py -k guidance -q`: `11 passed`
+- `python -m pytest tests/unit/ -q`: `121 passed`
+
+Deviation:
+- Worker implemented `/api/guidance/update` for packet ingestion. The final handoff text also mentions five guidance endpoints; no separate `/status` endpoint was added.
 
 ## Worker B - Frontend
 
-Changed:
-- `frontend/src/types/index.ts`
-  - Added optional `SessionState.active_reid.quality.cluster_confidence`.
-- `frontend/src/api/sessions.ts`
-  - Added optional `ReIdQuality.cluster_confidence`.
-- `frontend/src/pages/LocalizationPage.tsx`
-  - Added confidence badges to the cluster table.
-  - Static clusters show a `static` badge.
-- `frontend/src/pages/LocalizationPage.css`
-  - Added confidence badge styling.
-- `frontend/src/pages/ResultAnalysisPage.tsx`
-  - Added confidence badges to the cluster visibility sidebar.
-- `frontend/src/pages/ResultAnalysisPage.css`
-  - Added confidence badge styling.
+Created:
+- `frontend/src/api/airunit.ts`
+- `frontend/src/pages/AirUnitPage.tsx`
+- `frontend/src/pages/AirUnitPage.css`
 
-Verification:
+Modified:
+- `frontend/src/App.tsx`
+- `frontend/src/pages/SessionStartPage.tsx`
+- `frontend/src/pages/SessionStartPage.css`
+
+Implemented:
+- `/airunit` route.
+- Air Unit API wrappers and types.
+- Frontend websocket relay client with reconnect backoff.
+- Pi connection bar and WiFi/BLE command buttons.
+- Live guidance Leaflet map with boundary drawing, guidance grid overlay, drone marker, target marker, and target polyline.
+- Guidance polling while running.
+- Guidance status panel.
+- Pi file table with download links.
+- Last-200-lines log panel with autoscroll.
+- Session Start “Live Mission” launcher.
+
+Worker verification:
+- `cd frontend && npm.cmd run build`: passed.
+
+Deviation:
+- Live Mission launcher is reachable even when no scan folders are available.
+
+## Supervisor Integration
+
+Modified:
+- `backend/app/main.py`
+  - Imported `guidance` and `airunit`.
+  - Included both routers under `/api`.
+
+Final verification:
+- `cd backend && python -m pytest tests/unit/ -x -q`
+- Result: `121 passed, 2 warnings`
+- Warnings:
+  - Existing pytest config warning for unknown `asyncio_mode`.
+  - Pydantic V2 deprecation warning for class-based config in the new guidance update request model.
+
 - `cd frontend && npm.cmd run build`
-- Result: passed (`tsc && vite build`, 97 modules transformed).
+- Result: passed (`tsc && vite build`, 100 modules transformed).
 
-Build output tail:
+Frontend build output tail:
 ```text
 vite v5.4.21 building for production...
 transforming...
-✓ 97 modules transformed.
+✓ 100 modules transformed.
 rendering chunks...
 computing gzip size...
-dist/index.html                   0.40 kB │ gzip:   0.27 kB
-dist/assets/index-CRNIdq0w.css   38.10 kB │ gzip:  10.66 kB
-dist/assets/index-DvpDsc5j.js   384.47 kB │ gzip: 114.79 kB
-✓ built in 1.17s
+dist/index.html                   0.40 kB │ gzip:   0.28 kB
+dist/assets/index-Cf4MRVM_.css   42.62 kB │ gzip:  11.66 kB
+dist/assets/index-DS66n7PR.js   394.90 kB │ gzip: 117.78 kB
+✓ built in 1.34s
 ```
 
-## Worker C - QA Pipeline Validation
+## Known Issues / Follow-Up
 
-Changed:
-- `tests/e2e/validation_19_1.spec.ts`
-  - Added headed Chromium validation for the full field-test pipeline.
-
-Command:
-```powershell
-npx.cmd playwright test validation_19_1 --config playwright.demo.config.ts
-```
-
-Result:
-- `1 passed`
-- Headed Chromium / slow motion came from `playwright.demo.config.ts`.
-- GPS first rows confirmed `gps_lat` / `gps_lon`, approx `31.249825, 34.806081`.
-
-Pipeline report:
-```json
-{
-  "folder": "scan - field test 1 - 19.1",
-  "calibrationMac": "2c:59:8a:58:95:c1",
-  "enrichmentMatchRate": "99.3%",
-  "reidStaticClusters": "101",
-  "reidDynamicClusters": "35",
-  "reidUniqueDynamicMacs": "53",
-  "localizationClusters": 135,
-  "confidenceBadgesVisible": ["static", "static", "static", "static", "static"],
-  "gtMeanLat": 31.249795,
-  "gtMeanLon": 34.806095,
-  "evaluationScore": "0.0%",
-  "evaluationMatches": 0,
-  "evaluationFalsePositives": 100,
-  "evaluationFalseNegatives": 0,
-  "evaluationAmbiguous": "1"
-}
-```
-
-Screenshots:
-- `tests/e2e/screenshots/validation_step5_localization.png`
-- `tests/e2e/screenshots/validation_step6_gt_added.png`
-- `tests/e2e/screenshots/validation_step7_evaluation.png`
-
-Notes:
-- No test failure.
-- One browser console `404` appeared during the run, but it did not block the pipeline or assertions.
-
-## Integration Issues
-
-No blocking integration issues found. Backend unit tests, frontend production build, and the headed Playwright pipeline validation all pass in this workspace.
+- The Air Unit page expects a Pi websocket client to connect to `/api/airunit/ws`; without a Pi, file listing and command forwarding report not connected.
+- `backend/app/api/guidance.py` uses class-based Pydantic config for an open update model, which raises a deprecation warning under Pydantic v2. It does not fail tests.

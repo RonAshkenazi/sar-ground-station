@@ -123,6 +123,40 @@
   cursor: not-allowed;
 }
 
+.live-mission-section {
+  margin-top: 32px;
+  padding: 20px;
+  background: #1e3a5f;
+  border-radius: 8px;
+  border: 1px solid #2563eb;
+}
+
+.live-mission-section h3 {
+  margin: 0 0 8px;
+  color: #93c5fd;
+}
+
+.live-mission-section p {
+  margin: 0 0 16px;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.btn-live-mission {
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-live-mission:hover {
+  background: #1d4ed8;
+}
+
 .saved-sessions-panel {
   border-top: 1px solid var(--color-border);
   padding-top: 16px;

@@ -17,9 +17,11 @@ except ModuleNotFoundError:
 load_dotenv()
 
 from app.api import (  # noqa: E402
+    airunit,
     calibration,
     enrichment,
     executions,
+    guidance,
     inventory,
     localization,
     overview,
@@ -77,6 +79,8 @@ def create_app() -> FastAPI:
     app.include_router(result_analysis.router, prefix="/api")
     app.include_router(saved_sessions.router, prefix="/api")
     app.include_router(executions.router, prefix="/api")
+    app.include_router(guidance.router, prefix="/api")
+    app.include_router(airunit.router, prefix="/api")
 
     @app.get("/health")
     def health() -> dict[str, str]:

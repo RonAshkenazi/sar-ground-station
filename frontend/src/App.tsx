@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import AppShell from './components/layout/AppShell'
+import AirUnitPage from './pages/AirUnitPage'
 import CalibrationPage from './pages/CalibrationPage'
 import LocalizationPage from './pages/LocalizationPage'
 import OverviewPage from './pages/OverviewPage'
@@ -14,6 +15,7 @@ export default function App() {
         <Route element={<AppShell />}>
           <Route index element={<Navigate to="/session" replace />} />
           <Route path="/session" element={<SessionStartPage />} />
+          <Route path="/airunit" element={<AirUnitPage />} />
           <Route path="/overview" element={<OverviewPage />} />
           <Route path="/calibration" element={<CalibrationPage />} />
           <Route path="/enrichment" element={<ReIdEnrichmentPage />} />
@@ -24,4 +26,3 @@ export default function App() {
     </BrowserRouter>
   )
 }
-

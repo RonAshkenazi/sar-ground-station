@@ -190,6 +190,17 @@ export default function SessionStartPage() {
             )}
           </>
         )}
+
+        <div className="live-mission-section">
+          <h3>Live Mission</h3>
+          <p>Connect to the airborne unit and run smart flight guidance in real time.</p>
+          <button
+            className="btn-live-mission"
+            onClick={() => navigate('/airunit')}
+          >
+            Start Live Mission
+          </button>
+        </div>
       </div>
     </div>
   )

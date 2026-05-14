@@ -2122,3 +2122,162 @@ def test_save_list_and_resume_session(tmp_path, monkeypatch) -> None:
     assert resumed["mode"] == "wifi"
     assert resumed["active_calibration"]["approved"] is True
     assert resumed["active_localization"]["cluster_results"][0]["cluster_id"] == "c1"
+
+
+def test_guidance_rssi_normalization() -> None:
+    from app.modules.guidance.scoring import norm_rssi
+
+    assert norm_rssi(-100.0) == 0.0
+    assert norm_rssi(-40.0) == 1.0
+    assert norm_rssi(-90.0) == 0.0
+    assert norm_rssi(-55.0) == 1.0
+    assert 0.0 < norm_rssi(-70.0) < 1.0
+
+
+def test_guidance_count_scores_clamp() -> None:
+    from app.modules.guidance.scoring import compute_f_count, compute_f_strong
+
+    assert compute_f_count(0) == 0.0
+    assert compute_f_strong(0) == 0.0
+    assert compute_f_count(30) == pytest.approx(1.0)
+    assert compute_f_strong(10) == pytest.approx(1.0)
+    assert compute_f_count(300) == 1.0
+    assert compute_f_strong(100) == 1.0
+
+
+def test_guidance_grid_create_and_lookup() -> None:
+    from app.modules.guidance.grid import create_grid, latlon_to_cell_id
+
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    grid = create_grid(bounds, cell_size_m=30.0)
+
+    assert grid.n_rows > 0
+    assert grid.n_cols > 0
+    assert len(grid.cells) == grid.n_rows * grid.n_cols
+    cell_id = latlon_to_cell_id(31.0005, 34.0005, grid)
+    assert cell_id is not None
+    assert 0 <= cell_id < len(grid.cells)
+    assert latlon_to_cell_id(31.01, 34.0005, grid) is None
+
+
+def test_guidance_neighbors_8_connected() -> None:
+    from app.modules.guidance.grid import get_neighbors
+    from app.modules.guidance.models import GuidanceGrid, GridCell
+
+    cells = {
+        row * 3 + col: GridCell(
+            cell_id=row * 3 + col,
+            center_lat=float(row),
+            center_lon=float(col),
+            row=row,
+            col=col,
+        )
+        for row in range(3)
+        for col in range(3)
+    }
+    grid = GuidanceGrid(bounds={}, cell_size_m=1.0, n_rows=3, n_cols=3, cells=cells)
+
+    assert sorted(get_neighbors(4, grid)) == [0, 1, 2, 3, 5, 6, 7, 8]
+    assert sorted(get_neighbors(0, grid)) == [1, 3, 4]
+
+
+def test_guidance_evidence_score_increases_with_strong_rssi() -> None:
+    from app.modules.guidance.scoring import compute_evidence_raw
+
+    weak = compute_evidence_raw(
+        rssi_p95=-85.0,
+        rssi_max=-82.0,
+        frames_total=10,
+        frames_strong=0,
+    )
+    strong = compute_evidence_raw(
+        rssi_p95=-60.0,
+        rssi_max=-55.0,
+        frames_total=10,
+        frames_strong=8,
+    )
+
+    assert strong > weak
+
+
+def test_guidance_coverage_clamps() -> None:
+    from app.modules.guidance.scoring import update_coverage
+
+    assert update_coverage(0.0, 2500.0) == pytest.approx(0.5)
+    assert update_coverage(0.5, 5000.0) == 1.0
+
+
+def test_guidance_uncertainty_formula() -> None:
+    from app.modules.guidance.scoring import compute_uncertainty
+
+    assert compute_uncertainty(v=1.0, a=0.0) == 0.0
+    assert compute_uncertainty(v=0.0, a=1.0) == 1.0
+    assert compute_uncertainty(v=0.5, a=0.5) == pytest.approx(0.5)
+
+
+def test_guidance_final_score_explore_prefers_uncertainty() -> None:
+    from app.modules.guidance.scoring import compute_final_score
+
+    score_high_u = compute_final_score(e=0.0, u=1.0, p=0.0, d=0.0, r=0.0, mode="EXPLORE")
+    score_low_u = compute_final_score(e=0.0, u=0.0, p=0.0, d=0.0, r=0.0, mode="EXPLORE")
+
+    assert score_high_u > score_low_u
+
+
+def test_guidance_final_score_refine_prefers_evidence() -> None:
+    from app.modules.guidance.scoring import compute_final_score
+
+    score_high_e = compute_final_score(e=1.0, u=0.0, p=0.0, d=0.0, r=0.0, mode="REFINE")
+    score_low_e = compute_final_score(e=0.0, u=0.0, p=0.0, d=0.0, r=0.0, mode="REFINE")
+
+    assert score_high_e > score_low_e
+
+
+def test_guidance_engine_init_and_reset(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    assert not engine.is_initialized()
+
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    result = engine.init_grid(bounds, cell_size_m=30.0)
+
+    assert engine.is_initialized()
+    assert result["total_cells"] == result["n_rows"] * result["n_cols"]
+    engine.reset()
+    assert not engine.is_initialized()
+
+
+def test_guidance_engine_ingest_pose_and_recommend(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.0005,
+            "lon": 34.0005,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        }
+    )
+
+    rec = engine.get_recommendation()
+
+    assert rec is not None
+    assert rec["mode"] in ("EXPLORE", "REFINE")
+    assert "target_lat" in rec
+    assert "bearing_deg" in rec
+    assert rec["gps_valid"] is True
