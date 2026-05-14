@@ -1,0 +1,19 @@
+[Unit]
+Description=AirUnit Ground-Station Bridge
+After=network-online.target airunit-web.service
+Wants=network-online.target
+Requires=airunit-web.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/airunit2/Desktop/airunit
+Environment=GROUND_HOST=192.168.1.100
+Environment=GROUND_PORT=8000
+Environment=AIRUNIT_LOCAL_PORT=8080
+ExecStart=/home/airunit2/Desktop/airunit/.venv/bin/python -u bridge.py
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target
