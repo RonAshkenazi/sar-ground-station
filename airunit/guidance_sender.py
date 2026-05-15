@@ -1,0 +1,343 @@
+import csv
+import io
+import logging
+import threading
+import time
+from pathlib import Path
+from typing import Optional
+
+import requests
+
+try:
+    import psutil
+    _PSUTIL_AVAILABLE = True
+except ImportError:
+    _PSUTIL_AVAILABLE = False
+
+import config
+from gps_service import start_gps
+
+logger = logging.getLogger("guidance_sender")
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _read_cpu_temp() -> Optional[float]:
+    """Read CPU temperature from sysfs. Returns None on non-Pi or missing file."""
+    try:
+        temp_raw = Path("/sys/class/thermal/thermal_zone0/temp").read_text().strip()
+        return float(temp_raw) / 1000.0
+    except Exception:
+        return None
+
+
+def _percentile_95(values: list) -> float:
+    """Return the 95th percentile of a list of floats."""
+    if not values:
+        return 0.0
+    sorted_vals = sorted(values)
+    idx = min(int(len(sorted_vals) * 0.95), len(sorted_vals) - 1)
+    return sorted_vals[idx]
+
+
+def _gps_value(gps, attr_name: str, dict_name: str, default=None):
+    if isinstance(gps, dict):
+        return gps.get(dict_name, default)
+    return getattr(gps, attr_name, default)
+
+
+def _to_float(value) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _latest_row_float(rows: list, key: str) -> Optional[float]:
+    for row in reversed(rows):
+        value = _to_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _dwell_ms() -> int:
+    if getattr(config, "HOP_ENABLED", False):
+        return int(config.HOP_INTERVAL_SEC * 1000)
+    return int(config.GUIDANCE_EVIDENCE_INTERVAL_SEC * 1000)
+
+
+class GuidanceSender:
+    """Background service that sends pose, evidence, and health packets to the Ground Station."""
+
+    def __init__(self, ground_station_url: str, scan_manager):
+        self._gs_url = ground_station_url.rstrip("/")
+        self._scan_manager = scan_manager
+        self._gps_state, self._gps_stop, self._gps_thread = start_gps()
+        self._seq = 0
+        self._packets_sent = 0
+        self._evidence_packets_sent = 0
+        self._evidence_rows_seen = 0
+        self._dropped_msgs = 0
+        self._last_error: Optional[str] = None
+        self._stop_event = threading.Event()
+        self._threads: list = []
+
+    def start(self) -> None:
+        """Start the three background threads."""
+        self._stop_event.clear()
+        pose_thread = threading.Thread(target=self._pose_loop, name="guidance-pose", daemon=True)
+        evidence_thread = threading.Thread(target=self._evidence_loop, name="guidance-evidence", daemon=True)
+        health_thread = threading.Thread(target=self._health_loop, name="guidance-health", daemon=True)
+        self._threads = [pose_thread, evidence_thread, health_thread]
+        for t in self._threads:
+            t.start()
+        logger.info(f"GuidanceSender started → {self._gs_url}")
+
+    def stop(self) -> None:
+        """Signal all threads to stop and join them (timeout 3s each)."""
+        self._stop_event.set()
+        for t in self._threads:
+            t.join(timeout=3)
+        try:
+            self._gps_stop()
+            self._gps_thread.join(timeout=3)
+        except Exception as e:
+            logger.error(f"Error stopping GPS service: {e}")
+        self._threads = []
+        logger.info("GuidanceSender stopped")
+
+    @property
+    def is_running(self) -> bool:
+        """True while sender threads are active."""
+        return not self._stop_event.is_set() and any(t.is_alive() for t in self._threads)
+
+    @property
+    def packets_sent(self) -> int:
+        """Total packets successfully POSTed since start."""
+        return self._packets_sent
+
+    @property
+    def last_error(self) -> Optional[str]:
+        """Most recent error message, or None."""
+        return self._last_error
+
+    # ─── Internal loops ───────────────────────────────────────────────────────
+
+    def _pose_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                gps = self._gps_state.get()
+                self._seq += 1
+                sniffer_alive = self._scan_manager.status().startswith("running")
+                packet = {
+                    "msg_type": "POSE",
+                    "seq": self._seq,
+                    "t_ms": _now_ms(),
+                    "lat": _gps_value(gps, "lat", "gps_lat"),
+                    "lon": _gps_value(gps, "lon", "gps_lon"),
+                    "alt_m": _gps_value(gps, "alt_m", "gps_alt_m"),
+                    "heading_deg": None,
+                    "speed_mps": None,
+                    "gps_valid": _gps_value(gps, "fix", "gps_fix", 0) >= 1,
+                    "sniffer_alive": sniffer_alive,
+                    "battery_mv": None,
+                }
+                self._post("/api/guidance/pose", packet)
+            except Exception as e:
+                logger.error(f"_pose_loop error: {e}")
+            self._stop_event.wait(config.GUIDANCE_POSE_INTERVAL_SEC)
+
+    def _evidence_loop(self) -> None:
+        csv_reader_state: dict = {"file": None, "path": None}
+        while not self._stop_event.is_set():
+            try:
+                t_start = _now_ms()
+                self._stop_event.wait(config.GUIDANCE_EVIDENCE_INTERVAL_SEC)
+                if self._stop_event.is_set():
+                    break
+                t_end = _now_ms()
+
+                rows = self._read_new_csv_rows(csv_reader_state)
+                packet = self._build_evidence_packet(rows, t_start, t_end)
+                sent = self._post("/api/guidance/evidence", packet)
+                if sent:
+                    self._evidence_packets_sent += 1
+                logger.info(
+                    "evidence window rows=%s frames_total=%s frames_strong=%s "
+                    "lat=%s lon=%s sent=%s evidence_sent=%s packets_sent=%s last_error=%s",
+                    len(rows),
+                    packet["frames_total"],
+                    packet["frames_strong"],
+                    packet["lat"],
+                    packet["lon"],
+                    sent,
+                    self._evidence_packets_sent,
+                    self._packets_sent,
+                    self._last_error,
+                )
+            except Exception as e:
+                logger.error(f"_evidence_loop error: {e}")
+
+    def _build_evidence_packet(self, rows: list, t_start: int, t_end: int) -> dict:
+        rssi_values = []
+        for row in rows:
+            if row.get("frame_type") == "heartbeat":
+                continue
+            rssi = _to_float(row.get("rssi_dbm"))
+            if rssi is not None:
+                rssi_values.append(rssi)
+        self._evidence_rows_seen += len(rows)
+
+        frames_total = len(rssi_values)
+        frames_strong = sum(
+            1 for v in rssi_values if v > config.GUIDANCE_STRONG_RSSI_THRESHOLD_DBM
+        )
+
+        if rssi_values:
+            rssi_max: Optional[float] = max(rssi_values)
+            rssi_p95: Optional[float] = _percentile_95(rssi_values)
+            rssi_mean: Optional[float] = sum(rssi_values) / len(rssi_values)
+        else:
+            rssi_max = rssi_p95 = rssi_mean = None
+
+        gps = self._gps_state.get()
+        lat = _gps_value(gps, "lat", "gps_lat")
+        lon = _gps_value(gps, "lon", "gps_lon")
+        if lat is None:
+            lat = _latest_row_float(rows, "gps_lat")
+        if lon is None:
+            lon = _latest_row_float(rows, "gps_lon")
+
+        self._seq += 1
+        packet = {
+            "msg_type": "EVIDENCE",
+            "seq": self._seq,
+            "t_start_ms": t_start,
+            "t_end_ms": t_end,
+            "win_ms": t_end - t_start,
+            "dwell_ms": _dwell_ms(),
+            "lat": lat,
+            "lon": lon,
+            "frames_total": frames_total,
+            "frames_strong": frames_strong,
+            "rssi_max_dbm": rssi_max,
+            "rssi_p95_dbm": rssi_p95,
+            "rssi_mean_dbm": rssi_mean,
+        }
+        return packet
+
+    def _health_loop(self) -> None:
+        while not self._stop_event.is_set():
+            self._stop_event.wait(config.GUIDANCE_HEALTH_INTERVAL_SEC)
+            if self._stop_event.is_set():
+                break
+            try:
+                cpu_pct = psutil.cpu_percent(interval=0.5) if _PSUTIL_AVAILABLE else None
+                temp_c = _read_cpu_temp()
+                gps = self._gps_state.get()
+                sniffer_alive = self._scan_manager.status().startswith("running")
+                self._seq += 1
+                packet = {
+                    "msg_type": "HEALTH",
+                    "seq": self._seq,
+                    "t_ms": _now_ms(),
+                    "cpu_pct": cpu_pct,
+                    "temp_c": temp_c,
+                    "gps_valid": _gps_value(gps, "fix", "gps_fix", 0) >= 1,
+                    "sniffer_alive": sniffer_alive,
+                    "uplink_queue_len": 0,
+                    "dropped_msgs": self._dropped_msgs,
+                }
+                self._post("/api/guidance/health", packet)
+            except Exception as e:
+                logger.error(f"_health_loop error: {e}")
+
+    # ─── Helpers ──────────────────────────────────────────────────────────────
+
+    def _post(self, endpoint: str, data: dict) -> bool:
+        """POST data to the Ground Station. Never raises. Returns True on success."""
+        url = self._gs_url + endpoint
+        try:
+            resp = requests.post(url, json=data, timeout=config.GUIDANCE_HTTP_TIMEOUT_SEC)
+            resp.raise_for_status()
+            self._packets_sent += 1
+            self._last_error = None
+            return True
+        except Exception as e:
+            self._last_error = str(e)
+            self._dropped_msgs += 1
+            logger.warning(
+                "guidance post failed endpoint=%s packets_sent=%s dropped=%s last_error=%s",
+                endpoint,
+                self._packets_sent,
+                self._dropped_msgs,
+                self._last_error,
+            )
+            return False
+
+    def _read_new_csv_rows(self, state: dict) -> list:
+        """Read new rows appended to the most recently modified Wi-Fi scan CSV in LOG_DIR.
+
+        Handles missing file, new file rotation, and encoding errors gracefully.
+        Returns list of dicts, capped at GUIDANCE_EVIDENCE_LOOKBACK_ROWS.
+        """
+        try:
+            csv_files = list(config.LOG_DIR.glob(f"{config.LOG_FILE_PREFIX}*.csv"))
+            if not csv_files:
+                return []
+
+            newest_path = max(csv_files, key=lambda p: p.stat().st_mtime)
+
+            # New scan file detected — reopen and seek to end
+            if newest_path != state.get("path"):
+                if state.get("file"):
+                    try:
+                        state["file"].close()
+                    except Exception:
+                        pass
+                f = open(newest_path, newline="", encoding="utf-8", errors="replace")
+                state["file"] = f
+                state["path"] = newest_path
+                state["partial"] = ""
+                logger.info("guidance evidence following Wi-Fi CSV %s", newest_path)
+
+            f = state["file"]
+            if f is None:
+                return []
+
+            new_content = state.get("partial", "") + f.read()
+            state["partial"] = ""
+            if not new_content:
+                return []
+
+            # Split into lines; preserve the last partial line while the sniffer writes.
+            lines = new_content.split("\n")
+            complete_lines = lines[:-1] if not new_content.endswith("\n") else lines
+            if not new_content.endswith("\n"):
+                state["partial"] = lines[-1]
+            complete_lines = [l for l in complete_lines if l.strip()]
+            if not complete_lines:
+                return []
+
+            text_block = "\n".join(complete_lines)
+            first_fields = [field.strip() for field in complete_lines[0].split(",")]
+            if first_fields == config.FIELDNAMES:
+                reader = csv.DictReader(io.StringIO(text_block))
+            else:
+                reader = csv.DictReader(io.StringIO(text_block), fieldnames=config.FIELDNAMES)
+            rows = [
+                row for row in reader
+                if row.get("timestamp_utc") != "timestamp_utc" and row.get("frame_type")
+            ]
+
+            # Cap to most recent N rows
+            return rows[-config.GUIDANCE_EVIDENCE_LOOKBACK_ROWS:]
+
+        except Exception as e:
+            logger.error(f"_read_new_csv_rows error: {e}")
+            return []

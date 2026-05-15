@@ -40,6 +40,45 @@ def _gps_cell_id(state: GuidanceState) -> Optional[int]:
     return latlon_to_cell_id(state.drone.lat, state.drone.lon, state.grid)
 
 
+def _make_recommendation(
+    state: GuidanceState,
+    cell_id: int,
+    now_ms: float,
+    reason: str,
+) -> GuidanceRecommendation:
+    best = state.cell_states[cell_id]
+    previous_recommendation_ms = state.last_recommendation_ms
+    state.previous_target_id = cell_id
+    state.last_recommendation_ms = now_ms
+
+    dist = haversine_m(state.drone.lat, state.drone.lon, best.center_lat, best.center_lon)
+    bear = bearing_deg(state.drone.lat, state.drone.lon, best.center_lat, best.center_lon)
+    stale = (
+        previous_recommendation_ms is not None
+        and (now_ms - previous_recommendation_ms) > cfg.RECOMMENDATION_INTERVAL_SEC * 1000 * 3
+    )
+
+    return GuidanceRecommendation(
+        timestamp_ms=now_ms,
+        mode=state.mode,
+        target_cell_id=cell_id,
+        target_lat=best.center_lat,
+        target_lon=best.center_lon,
+        bearing_deg=bear,
+        distance_m=dist,
+        final_score=best.final_score,
+        evidence_score=best.evidence_score,
+        uncertainty_score=best.uncertainty_score,
+        peak_score=best.peak_score,
+        travel_cost=best.travel_cost,
+        oscillation_penalty=best.oscillation_penalty,
+        gps_valid=state.drone.gps_valid,
+        data_fresh=_is_data_fresh(state),
+        recommendation_stale=stale,
+        reason=reason,
+    )
+
+
 def _check_mode_switch(state: GuidanceState, now_ms: float) -> None:
     if state.mode == "EXPLORE":
         for cs in state.cell_states.values():
@@ -102,71 +141,9 @@ def compute_recommendation(state: GuidanceState) -> Optional[GuidanceRecommendat
         if cs.evidence_score > 0.0:
             evidence_cell_ids.append(cell_id)
 
-    best_score = max(cs.final_score for cs in state.cell_states.values())
-    if not evidence_cell_ids or best_score <= 0.0:
-        best_id = current_cell_id
-        best = state.cell_states[best_id]
-        best.final_score = max(best.final_score, 0.0)
-        best.peak_score = 0.0
-        best.oscillation_penalty = 0.0
-        previous_recommendation_ms = state.last_recommendation_ms
-        state.previous_target_id = best_id
-        state.last_recommendation_ms = now
-        dist = 0.0
-        bear = 0.0
-        stale = (
-            previous_recommendation_ms is not None
-            and (now - previous_recommendation_ms) > cfg.RECOMMENDATION_INTERVAL_SEC * 1000 * 3
-        )
-        return GuidanceRecommendation(
-            timestamp_ms=now,
-            mode=state.mode,
-            target_cell_id=best_id,
-            target_lat=best.center_lat,
-            target_lon=best.center_lon,
-            bearing_deg=bear,
-            distance_m=dist,
-            final_score=best.final_score,
-            evidence_score=best.evidence_score,
-            uncertainty_score=best.uncertainty_score,
-            peak_score=best.peak_score,
-            travel_cost=best.travel_cost,
-            oscillation_penalty=best.oscillation_penalty,
-            gps_valid=state.drone.gps_valid,
-            data_fresh=_is_data_fresh(state),
-            recommendation_stale=stale,
-            reason="Current Pi GPS cell",
-        )
+    if not evidence_cell_ids:
+        return _make_recommendation(state, current_cell_id, now, "Current Pi GPS cell")
 
     best_id = max(evidence_cell_ids, key=lambda cid: state.cell_states[cid].final_score)
     best = state.cell_states[best_id]
-    previous_recommendation_ms = state.last_recommendation_ms
-    state.previous_target_id = best_id
-    state.last_recommendation_ms = now
-
-    dist = haversine_m(state.drone.lat, state.drone.lon, best.center_lat, best.center_lon)
-    bear = bearing_deg(state.drone.lat, state.drone.lon, best.center_lat, best.center_lon)
-    stale = (
-        previous_recommendation_ms is not None
-        and (now - previous_recommendation_ms) > cfg.RECOMMENDATION_INTERVAL_SEC * 1000 * 3
-    )
-
-    return GuidanceRecommendation(
-        timestamp_ms=now,
-        mode=state.mode,
-        target_cell_id=best_id,
-        target_lat=best.center_lat,
-        target_lon=best.center_lon,
-        bearing_deg=bear,
-        distance_m=dist,
-        final_score=best.final_score,
-        evidence_score=best.evidence_score,
-        uncertainty_score=best.uncertainty_score,
-        peak_score=best.peak_score,
-        travel_cost=best.travel_cost,
-        oscillation_penalty=best.oscillation_penalty,
-        gps_valid=state.drone.gps_valid,
-        data_fresh=_is_data_fresh(state),
-        recommendation_stale=stale,
-        reason=_reason(state.mode, best),
-    )
+    return _make_recommendation(state, best_id, now, _reason(state.mode, best))
