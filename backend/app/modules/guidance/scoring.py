@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time as _time
 from typing import Optional
 
 from . import config as cfg
@@ -53,6 +54,58 @@ def update_age(current_a: float, delta_ms: float) -> float:
 
 def compute_uncertainty(v: float, a: float) -> float:
     return 0.6 * (1.0 - v) + 0.4 * a
+
+
+def compute_evidence_freshness(evidence_score: float, last_seen_ms: Optional[float]) -> float:
+    if last_seen_ms is None:
+        return 0.0
+    age_ms = _time.time() * 1000.0 - last_seen_ms
+    return evidence_score * math.exp(-age_ms / cfg.TAU_EVIDENCE_DECAY_MS)
+
+
+def compute_spatial_entropy(
+    cell_id: int,
+    cell_states: dict[int, GridCellState],
+    grid: GuidanceGrid,
+) -> tuple[float, float]:
+    now_ms = _time.time() * 1000.0
+    neighborhood = [cell_id] + get_neighbors(cell_id, grid)
+    masses: list[float] = []
+    raw_total = 0.0
+
+    for nid in neighborhood:
+        cs = cell_states.get(nid)
+        if cs is None:
+            masses.append(cfg.ENTROPY_EPSILON)
+            continue
+        age_ms = (now_ms - cs.last_seen_ms) if cs.last_seen_ms is not None else 1e9
+        mass = cs.evidence_score * math.exp(-age_ms / cfg.TAU_EVIDENCE_DECAY_MS)
+        raw_total += mass
+        masses.append(max(mass, cfg.ENTROPY_EPSILON))
+
+    if raw_total < cfg.ENTROPY_MIN_MASS:
+        return 1.0, 0.0
+
+    total = sum(masses)
+    n = len(masses)
+    entropy = -sum((m / total) * math.log(m / total) for m in masses)
+    h = max(0.0, min(1.0, entropy / math.log(n)))
+    return h, 1.0 - h
+
+
+def compute_freshness_score(last_seen_ms: Optional[float], now_ms: float) -> float:
+    if last_seen_ms is None:
+        return 0.0
+    age_ms = max(0.0, now_ms - last_seen_ms)
+    return max(0.0, min(1.0, 1.0 - age_ms / cfg.EVIDENCE_FRESH_MS))
+
+
+def compute_entropy_score(frames_strong: int, frames_total: int) -> float:
+    if frames_total <= 0 or frames_strong <= 0 or frames_strong >= frames_total:
+        return 0.0
+    p = frames_strong / frames_total
+    entropy = -(p * math.log2(p) + (1.0 - p) * math.log2(1.0 - p))
+    return max(0.0, min(1.0, entropy))
 
 
 def compute_peakness(

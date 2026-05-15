@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import time
 
-from .grid import latlon_to_cell_id
+from .grid import get_neighbors, latlon_to_cell_id
 from .models import GridCellState, GuidanceGrid, GuidanceState
 from .scoring import (
+    compute_entropy_score,
+    compute_evidence_freshness,
     compute_evidence_raw,
+    compute_freshness_score,
+    compute_spatial_entropy,
     compute_uncertainty,
     update_age,
     update_coverage,
     update_evidence_ema,
 )
+from . import config as cfg
 
 
 EVIDENCE_PACKET_SUMMARY_KEYS = (
@@ -57,6 +62,33 @@ def init_cell_states(grid: GuidanceGrid) -> dict[int, GridCellState]:
     }
 
 
+def _is_diagonal_neighbor(grid: GuidanceGrid, cell_id: int, neighbor_id: int) -> bool:
+    source_cell = grid.cells.get(cell_id)
+    neighbor_cell = grid.cells.get(neighbor_id)
+    if source_cell is None or neighbor_cell is None:
+        return False
+    return (
+        abs(source_cell.row - neighbor_cell.row) == 1
+        and abs(source_cell.col - neighbor_cell.col) == 1
+    )
+
+
+def _refresh_spatial_scores(state: GuidanceState, cell_ids: list[int]) -> None:
+    if state.grid is None:
+        return
+    for aid in cell_ids:
+        acs = state.cell_states.get(aid)
+        if acs is None:
+            continue
+        h, c = compute_spatial_entropy(aid, state.cell_states, state.grid)
+        acs.spatial_entropy = h
+        acs.spatial_certainty = c
+        acs.entropy_score = h
+        acs.evidence_freshness = compute_evidence_freshness(acs.evidence_score, acs.last_seen_ms)
+        acs.evidence_freshness_score = acs.evidence_freshness
+        acs.display_score = acs.evidence_freshness
+
+
 def ingest_pose(state: GuidanceState, packet: dict) -> None:
     if state.grid is None:
         return
@@ -87,12 +119,25 @@ def ingest_pose(state: GuidanceState, packet: dict) -> None:
 
     dwell_ms = 0.0
     if previous_pose_ms is not None:
-        dwell_ms = max(0.0, min(now - previous_pose_ms, 2000.0))
+        dwell_ms = max(0.0, min(now - previous_pose_ms, cfg.POSE_DWELL_MAX_MS))
     cs.coverage_score = update_coverage(cs.coverage_score, dwell_ms)
     cs.age_score = 0.0
     cs.uncertainty_score = compute_uncertainty(cs.coverage_score, cs.age_score)
     cs.total_dwell_ms += dwell_ms
     cs.last_updated_ms = now
+    cs.last_seen_ms = now
+
+    for neighbor_id in get_neighbors(cell_id, state.grid):
+        ncs = state.cell_states.get(neighbor_id)
+        if ncs is None:
+            continue
+        is_diagonal = _is_diagonal_neighbor(state.grid, cell_id, neighbor_id)
+        k_cov = cfg.NEIGHBOR_COVERAGE_ALPHA_DIAG if is_diagonal else cfg.NEIGHBOR_COVERAGE_ALPHA_ORTH
+        ncs.coverage_score = update_coverage(
+            ncs.coverage_score,
+            cfg.NEIGHBOR_COVERAGE_BETA * k_cov * dwell_ms,
+        )
+        ncs.uncertainty_score = compute_uncertainty(ncs.coverage_score, ncs.age_score)
 
 
 def ingest_evidence(state: GuidanceState, packet: dict) -> None:
@@ -152,6 +197,19 @@ def ingest_evidence(state: GuidanceState, packet: dict) -> None:
     cs.last_updated_ms = now
     cs.last_seen_ms = now
 
+    affected_ids = [cell_id]
+    for neighbor_id in get_neighbors(cell_id, state.grid):
+        ncs = state.cell_states.get(neighbor_id)
+        if ncs is None:
+            continue
+        is_diagonal = _is_diagonal_neighbor(state.grid, cell_id, neighbor_id)
+        alpha = cfg.NEIGHBOR_EVIDENCE_ALPHA_DIAG if is_diagonal else cfg.NEIGHBOR_EVIDENCE_ALPHA_ORTH
+        ncs.evidence_score = update_evidence_ema(ncs.evidence_score, alpha * raw_e)
+        ncs.last_seen_ms = now
+        affected_ids.append(neighbor_id)
+
+    _refresh_spatial_scores(state, affected_ids)
+
     diag = state.evidence_diagnostics
     diag.evidence_packets_ingested += 1
     diag.last_evidence_ms = now
@@ -176,3 +234,13 @@ def tick_age(state: GuidanceState, delta_ms: float) -> None:
         if cs.last_updated_ms is None or (now - cs.last_updated_ms) > 2000:
             cs.age_score = update_age(cs.age_score, delta_ms)
         cs.uncertainty_score = compute_uncertainty(cs.coverage_score, cs.age_score)
+        cs.evidence_freshness = compute_evidence_freshness(cs.evidence_score, cs.last_seen_ms)
+        cs.evidence_freshness_score = cs.evidence_freshness
+        cs.display_score = cs.evidence_freshness
+        if state.grid is not None:
+            cs.spatial_entropy, cs.spatial_certainty = compute_spatial_entropy(
+                cs.cell_id,
+                state.cell_states,
+                state.grid,
+            )
+            cs.entropy_score = cs.spatial_entropy

@@ -64,8 +64,15 @@ class GuidanceEngine:
         with self._lock:
             if self._state is None or self._state.grid is None:
                 return None
+            tick_age(self._state, 0.0)
             max_frames = max((cs.total_frames for cs in self._state.cell_states.values()), default=0)
             max_evidence = max((cs.evidence_score for cs in self._state.cell_states.values()), default=0.0)
+            lat_step = (
+                self._state.grid.bounds["max_lat"] - self._state.grid.bounds["min_lat"]
+            ) / self._state.grid.n_rows
+            lon_step = (
+                self._state.grid.bounds["max_lon"] - self._state.grid.bounds["min_lon"]
+            ) / self._state.grid.n_cols
             return {
                 "bounds": self._state.grid.bounds,
                 "cell_size_m": self._state.grid.cell_size_m,
@@ -77,13 +84,31 @@ class GuidanceEngine:
                         "cell_id": cs.cell_id,
                         "center_lat": cs.center_lat,
                         "center_lon": cs.center_lon,
+                        "row": self._state.grid.cells[cs.cell_id].row,
+                        "col": self._state.grid.cells[cs.cell_id].col,
+                        "min_lat": cs.center_lat - lat_step / 2,
+                        "max_lat": cs.center_lat + lat_step / 2,
+                        "min_lon": cs.center_lon - lon_step / 2,
+                        "max_lon": cs.center_lon + lon_step / 2,
                         "evidence_score": cs.evidence_score,
                         "uncertainty_score": cs.uncertainty_score,
                         "peak_score": cs.peak_score,
+                        "spatial_entropy": cs.spatial_entropy,
+                        "spatial_certainty": cs.spatial_certainty,
+                        "evidence_freshness": cs.evidence_freshness,
+                        "evidence_freshness_score": cs.evidence_freshness_score,
+                        "entropy_score": cs.entropy_score,
                         "coverage_score": cs.coverage_score,
                         "age_score": cs.age_score,
                         "final_score": cs.final_score,
-                        "display_score": self._display_score(cs, max_frames, max_evidence),
+                        "display_score": cs.display_score,
+                        "rssi_max": cs.rssi_max,
+                        "rssi_p95": cs.rssi_p95,
+                        "rssi_mean": cs.rssi_mean,
+                        "total_frames": cs.total_frames,
+                        "total_strong_frames": cs.total_strong_frames,
+                        "total_dwell_ms": cs.total_dwell_ms,
+                        "last_seen_ms": cs.last_seen_ms,
                     }
                     for cs in self._state.cell_states.values()
                 ],

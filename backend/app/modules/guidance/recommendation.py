@@ -138,8 +138,16 @@ def compute_recommendation(state: GuidanceState) -> Optional[GuidanceRecommendat
             cs.oscillation_penalty,
             state.mode,
         )
-        if cs.evidence_score > 0.0:
+        if cs.evidence_score >= cfg.E_TARGET_MIN:
             evidence_cell_ids.append(cell_id)
+
+    if evidence_cell_ids:
+        max_evidence = max(state.cell_states[cid].evidence_score for cid in evidence_cell_ids)
+        evidence_cell_ids = [
+            cid
+            for cid in evidence_cell_ids
+            if state.cell_states[cid].evidence_score >= max(cfg.E_TARGET_MIN, max_evidence * 0.5)
+        ]
 
     if not evidence_cell_ids:
         return _make_recommendation(state, current_cell_id, now, "Current Pi GPS cell")

@@ -24,6 +24,11 @@ class GridCellState:
     age_score: float = 0.0
     uncertainty_score: float = 0.0
     peak_score: float = 0.0
+    evidence_freshness_score: float = 0.0
+    entropy_score: float = 0.0
+    spatial_entropy: float = 1.0
+    spatial_certainty: float = 0.0
+    evidence_freshness: float = 0.0
     travel_cost: float = 0.0
     oscillation_penalty: float = 0.0
     final_score: float = 0.0

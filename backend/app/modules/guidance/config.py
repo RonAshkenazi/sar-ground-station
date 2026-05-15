@@ -14,6 +14,11 @@ T_COV_MS: float = 5000.0
 
 T_AGE_MS: float = 30_000.0
 
+# Data freshness
+DATA_FRESH_MS: float = 10_000.0
+EVIDENCE_FRESH_MS: float = 10_000.0
+POSE_DWELL_MAX_MS: float = 2_000.0
+
 D_MAX_M: float = 500.0
 
 R_CHANGE_WEIGHT: float = 0.5
@@ -47,3 +52,22 @@ DEFAULT_CELL_SIZE_M: float = 30.0
 RECOMMENDATION_INTERVAL_SEC: float = 3.0
 
 GUIDANCE_HISTORY_SUBPATH: str = "guidance/guidance_history.csv"
+
+# Spatial evidence propagation kernel
+NEIGHBOR_EVIDENCE_ALPHA_ORTH: float = 0.25
+NEIGHBOR_EVIDENCE_ALPHA_DIAG: float = 0.15
+
+# Spatial coverage/dwell propagation
+NEIGHBOR_COVERAGE_BETA: float = 0.20
+NEIGHBOR_COVERAGE_ALPHA_ORTH: float = 1.00
+NEIGHBOR_COVERAGE_ALPHA_DIAG: float = 0.70
+
+# Evidence freshness decay (ms); 300 000 ms = 5 min
+TAU_EVIDENCE_DECAY_MS: float = 300_000.0
+
+# Minimum evidence for candidate target selection
+E_TARGET_MIN: float = 0.05
+
+# Entropy numerics
+ENTROPY_EPSILON: float = 1e-6
+ENTROPY_MIN_MASS: float = 0.05
