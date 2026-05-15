@@ -111,6 +111,7 @@ manager = ScanManager(
         broadcast({"type": "status", "status": f"running({count})"}),
     ),
     on_exit=lambda code: broadcast({"type": "status", "status": f"exited({code})", "code": code}),
+    on_pose=lambda pose: broadcast(pose),
 )
 
 ble_manager = BleScanManager(

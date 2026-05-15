@@ -69,6 +69,7 @@ export interface GridCell {
   coverage_score: number
   age_score: number
   final_score: number
+  display_score?: number
 }
 
 export interface GuidanceGridState {

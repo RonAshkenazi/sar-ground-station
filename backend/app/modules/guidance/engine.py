@@ -64,6 +64,8 @@ class GuidanceEngine:
         with self._lock:
             if self._state is None or self._state.grid is None:
                 return None
+            max_frames = max((cs.total_frames for cs in self._state.cell_states.values()), default=0)
+            max_evidence = max((cs.evidence_score for cs in self._state.cell_states.values()), default=0.0)
             return {
                 "bounds": self._state.grid.bounds,
                 "cell_size_m": self._state.grid.cell_size_m,
@@ -81,10 +83,20 @@ class GuidanceEngine:
                         "coverage_score": cs.coverage_score,
                         "age_score": cs.age_score,
                         "final_score": cs.final_score,
+                        "display_score": self._display_score(cs, max_frames, max_evidence),
                     }
                     for cs in self._state.cell_states.values()
                 ],
             }
+
+    @staticmethod
+    def _display_score(cs, max_frames: int, max_evidence: float) -> float:
+        if cs.total_frames <= 0:
+            return 0.0
+        frame_ratio = cs.total_frames / max_frames if max_frames > 0 else 0.0
+        evidence_ratio = cs.evidence_score / max_evidence if max_evidence > 0 else 0.0
+        packet_presence = min(1.0, cs.total_frames / 10.0)
+        return round(0.5 * packet_presence + 0.3 * frame_ratio + 0.2 * evidence_ratio, 4)
 
     def is_initialized(self) -> bool:
         with self._lock:

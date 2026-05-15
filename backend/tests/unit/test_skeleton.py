@@ -2233,6 +2233,54 @@ def test_guidance_final_score_refine_prefers_evidence() -> None:
     assert score_high_e > score_low_e
 
 
+def test_guidance_grid_display_score_stays_neutral_without_packets(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            pass
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    engine._tick_thread = type("StoppedThread", (), {"start": lambda self: None})()
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    engine.init_grid(bounds, cell_size_m=30.0)
+
+    grid = engine.get_grid_state()
+    assert grid is not None
+    assert all(cell["display_score"] == 0.0 for cell in grid["cells"])
+
+
+def test_guidance_grid_display_score_increases_with_packets(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            pass
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    engine._tick_thread = type("StoppedThread", (), {"start": lambda self: None})()
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "EVIDENCE",
+            "lat": 31.0005,
+            "lon": 34.0005,
+            "dwell_ms": 6000,
+            "frames_total": 12,
+            "frames_strong": 8,
+            "rssi_max_dbm": -58.0,
+            "rssi_p95_dbm": -61.0,
+        }
+    )
+
+    grid = engine.get_grid_state()
+    assert grid is not None
+    assert max(cell["display_score"] for cell in grid["cells"]) > 0.0
+
+
 def test_guidance_engine_init_and_reset(monkeypatch) -> None:
     from app.modules.guidance import engine as engine_module
 
@@ -2281,3 +2329,62 @@ def test_guidance_engine_ingest_pose_and_recommend(monkeypatch) -> None:
     assert "target_lat" in rec
     assert "bearing_deg" in rec
     assert rec["gps_valid"] is True
+
+
+def test_guidance_engine_returns_no_target_without_packets(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.0005,
+            "lon": 34.0005,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        }
+    )
+
+    assert engine.get_recommendation() is None
+
+
+def test_guidance_engine_returns_no_target_when_pi_is_not_valid(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "EVIDENCE",
+            "lat": 31.0005,
+            "lon": 34.0005,
+            "frames_total": 6,
+            "frames_strong": 3,
+            "rssi_max_dbm": -58.0,
+            "rssi_p95_dbm": -60.0,
+        }
+    )
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.0005,
+            "lon": 34.0005,
+            "gps_valid": False,
+            "sniffer_alive": False,
+        }
+    )
+
+    assert engine.get_recommendation() is None

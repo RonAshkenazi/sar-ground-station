@@ -35,13 +35,35 @@ def ingest_pose(state: GuidanceState, packet: dict) -> None:
     lon = packet.get("lon")
     if lat is None or lon is None:
         return
+    now = _now_ms()
+    previous_pose_ms = state.drone.last_pose_ms
     state.drone.lat = float(lat)
     state.drone.lon = float(lon)
     state.drone.gps_valid = bool(packet.get("gps_valid", False))
-    state.drone.sniffer_alive = bool(packet.get("sniffer_alive", False))
-    state.drone.last_pose_ms = _now_ms()
+    if "sniffer_alive" in packet:
+        state.drone.sniffer_alive = bool(packet["sniffer_alive"])
+    state.drone.last_pose_ms = now
     state.drone.heading_deg = packet.get("heading_deg")
     state.drone.speed_mps = packet.get("speed_mps")
+
+    if not state.drone.gps_valid:
+        return
+
+    cell_id = latlon_to_cell_id(state.drone.lat, state.drone.lon, state.grid)
+    if cell_id is None:
+        return
+    cs = state.cell_states.get(cell_id)
+    if cs is None:
+        return
+
+    dwell_ms = 0.0
+    if previous_pose_ms is not None:
+        dwell_ms = max(0.0, min(now - previous_pose_ms, 2000.0))
+    cs.coverage_score = update_coverage(cs.coverage_score, dwell_ms)
+    cs.age_score = 0.0
+    cs.uncertainty_score = compute_uncertainty(cs.coverage_score, cs.age_score)
+    cs.total_dwell_ms += dwell_ms
+    cs.last_updated_ms = now
 
 
 def ingest_evidence(state: GuidanceState, packet: dict) -> None:

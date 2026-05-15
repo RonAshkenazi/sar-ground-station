@@ -4,7 +4,7 @@ import time
 from typing import Optional
 
 from . import config as cfg
-from .grid import bearing_deg, haversine_m
+from .grid import bearing_deg, haversine_m, latlon_to_cell_id
 from .models import GuidanceRecommendation, GuidanceState, GridCellState
 from .scoring import (
     compute_final_score,
@@ -32,6 +32,12 @@ def _reason(mode: str, cs: GridCellState) -> str:
     if cs.coverage_score < 0.3:
         return "Unvisited area"
     return "Best unexplored region"
+
+
+def _gps_cell_id(state: GuidanceState) -> Optional[int]:
+    if not state.drone.gps_valid or state.grid is None:
+        return None
+    return latlon_to_cell_id(state.drone.lat, state.drone.lon, state.grid)
 
 
 def _check_mode_switch(state: GuidanceState, now_ms: float) -> None:
@@ -67,6 +73,12 @@ def compute_recommendation(state: GuidanceState) -> Optional[GuidanceRecommendat
         return None
 
     now = _now_ms()
+    current_cell_id = _gps_cell_id(state)
+    if current_cell_id is None or not state.drone.sniffer_alive:
+        return None
+
+    evidence_cell_ids: list[int] = []
+
     for cell_id, cs in state.cell_states.items():
         cs.peak_score = compute_peakness(cell_id, state.cell_states, state.grid)
 
@@ -87,8 +99,46 @@ def compute_recommendation(state: GuidanceState) -> Optional[GuidanceRecommendat
             cs.oscillation_penalty,
             state.mode,
         )
+        if cs.evidence_score > 0.0:
+            evidence_cell_ids.append(cell_id)
 
-    best_id = max(state.cell_states, key=lambda cid: state.cell_states[cid].final_score)
+    best_score = max(cs.final_score for cs in state.cell_states.values())
+    if not evidence_cell_ids or best_score <= 0.0:
+        best_id = current_cell_id
+        best = state.cell_states[best_id]
+        best.final_score = max(best.final_score, 0.0)
+        best.peak_score = 0.0
+        best.oscillation_penalty = 0.0
+        previous_recommendation_ms = state.last_recommendation_ms
+        state.previous_target_id = best_id
+        state.last_recommendation_ms = now
+        dist = 0.0
+        bear = 0.0
+        stale = (
+            previous_recommendation_ms is not None
+            and (now - previous_recommendation_ms) > cfg.RECOMMENDATION_INTERVAL_SEC * 1000 * 3
+        )
+        return GuidanceRecommendation(
+            timestamp_ms=now,
+            mode=state.mode,
+            target_cell_id=best_id,
+            target_lat=best.center_lat,
+            target_lon=best.center_lon,
+            bearing_deg=bear,
+            distance_m=dist,
+            final_score=best.final_score,
+            evidence_score=best.evidence_score,
+            uncertainty_score=best.uncertainty_score,
+            peak_score=best.peak_score,
+            travel_cost=best.travel_cost,
+            oscillation_penalty=best.oscillation_penalty,
+            gps_valid=state.drone.gps_valid,
+            data_fresh=_is_data_fresh(state),
+            recommendation_stale=stale,
+            reason="Current Pi GPS cell",
+        )
+
+    best_id = max(evidence_cell_ids, key=lambda cid: state.cell_states[cid].final_score)
     best = state.cell_states[best_id]
     previous_recommendation_ms = state.last_recommendation_ms
     state.previous_target_id = best_id

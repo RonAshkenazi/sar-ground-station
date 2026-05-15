@@ -27,6 +27,7 @@ class GridCellState:
     travel_cost: float = 0.0
     oscillation_penalty: float = 0.0
     final_score: float = 0.0
+    display_score: float = 0.0
 
     rssi_max: Optional[float] = None
     rssi_p95: Optional[float] = None

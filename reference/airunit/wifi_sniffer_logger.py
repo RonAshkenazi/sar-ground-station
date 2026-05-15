@@ -81,6 +81,9 @@ def status_printer_thread(stats: Dict[str, int], gps_state: Any, hop_state: Dict
         pos_str = f"{lat:.5f}, {lon:.5f}" if (lat is not None and lon is not None) else "No Fix"
         ch = hop_state.get("channel")
         print(f"[status] Packets: {count} | GPS Fix: {fix} | Pos: {pos_str} | Chan: {ch}")
+        if lat is not None and lon is not None:
+            import json as _json, sys as _sys
+            print(_json.dumps({"__pose__": True, "lat": lat, "lon": lon, "gps_valid": fix >= 1, "gps_fix": fix}), flush=True)
 
 
 def channel_hopper_thread(iface: str, channels, interval: float, state: Dict[str, int], stop_event: threading.Event):
