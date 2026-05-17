@@ -151,7 +151,11 @@ hop_config = HopConfig()
 
 @app.get("/")
 def index():
-    return HTMLResponse((Path(__file__).parent / "static" / "index.html").read_text())
+    static_dir = Path(__file__).parent / "static"
+    index_file = static_dir / "index.html"
+    setup_file = static_dir / "setup.html"
+    page = index_file if index_file.exists() else setup_file
+    return HTMLResponse(page.read_text())
 
 
 @app.post("/logs/delete")
