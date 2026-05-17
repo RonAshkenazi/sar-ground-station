@@ -7,6 +7,9 @@
 # Optional override:
 #   sudo DEPLOY_DIR=/custom/path/airunit bash ~/sar-ground-station/airunit/deploy.sh
 #
+# Code-only deploy when dependencies are already installed:
+#   sudo SKIP_DEPS=1 bash ~/sar-ground-station/airunit/deploy.sh
+#
 # ── CONFIGURE THIS ONCE ────────────────────────────────────────────────────────
 # ───────────────────────────────────────────────────────────────────────────────
 
@@ -46,15 +49,21 @@ rsync -av --delete \
 VENV="$DEPLOY_DIR/.venv"
 PYTHON="$VENV/bin/python"
 
-if [ ! -x "$PYTHON" ]; then
-    echo "[3/4] Creating venv..."
-    python3 -m venv "$VENV"
+if [ "${SKIP_DEPS:-0}" = "1" ]; then
+    echo "[3/4] Skipping deps (SKIP_DEPS=1)"
 else
-    echo "[3/4] Updating deps..."
-fi
+    if [ ! -x "$PYTHON" ]; then
+        echo "[3/4] Creating venv..."
+        python3 -m venv "$VENV"
+    else
+        echo "[3/4] Updating deps..."
+    fi
 
-"$VENV/bin/pip" install --quiet --upgrade pip
-"$VENV/bin/pip" install --quiet -r "$DEPLOY_DIR/requirements.txt"
+    "$PYTHON" -m pip install \
+        --disable-pip-version-check \
+        --timeout "${PIP_TIMEOUT_SEC:-30}" \
+        -r "$DEPLOY_DIR/requirements.txt"
+fi
 
 # ── 4. Restart services ───────────────────────────────────────────────────────
 echo "[4/4] Starting services..."
