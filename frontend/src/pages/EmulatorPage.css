@@ -214,3 +214,65 @@
     min-height: 560px;
   }
 }
+
+.emu-sim-section {
+  border-bottom: 1px solid #1e293b;
+  padding-bottom: 12px;
+  margin-bottom: 8px;
+}
+
+.emu-sim-divider {
+  height: 1px;
+  background: #1e293b;
+  margin-top: 10px;
+}
+
+.emu-sim-chip {
+  background: #1d4ed8;
+  color: #bfdbfe;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.emu-btn-start {
+  background: #16a34a;
+  color: #fff;
+  font-weight: 700;
+}
+
+.emu-btn-start:hover:not(:disabled) {
+  background: #15803d;
+}
+
+.emu-btn-stop {
+  background: #dc2626;
+  color: #fff;
+  font-weight: 700;
+}
+
+.emu-btn-stop:hover {
+  background: #b91c1c;
+}
+
+.emu-btn:disabled,
+.emu-slider:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.emu-hint {
+  font-size: 11px;
+  color: #64748b;
+  font-style: italic;
+  padding: 2px 0 4px;
+}
+
+.emu-target-coords {
+  font-size: 11px;
+  color: #fca5a5;
+  font-family: monospace;
+}

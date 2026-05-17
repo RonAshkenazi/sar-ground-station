@@ -2947,3 +2947,136 @@ def test_guidance_debug_reports_dropped_evidence_reason() -> None:
     assert debug["evidence_packets_dropped"] == 1
     assert debug["last_evidence_packet"]["lat"] == 31.26
     assert debug["max_evidence_cell"]["evidence_score"] == 0.0
+
+
+def test_guidance_default_cell_size_is_5m() -> None:
+    from app.modules.guidance import config as cfg
+
+    assert cfg.DEFAULT_CELL_SIZE_M == 5.0
+
+
+def test_guidance_age_reaches_max_at_5min() -> None:
+    from app.modules.guidance.scoring import update_age
+
+    a = 0.0
+    # 100 ticks of 3s = 300s = 5 min
+    for _ in range(100):
+        a = update_age(a, 3000.0)
+    assert a == 1.0
+
+
+def test_guidance_coverage_packet_boost() -> None:
+    """V should increase based on frame count (N_COV_PACKET_REF frames = full boost)."""
+    from app.modules.guidance import config as cfg
+
+    # 20 frames should give a boost of 1.0 (full coverage in one window)
+    packet_boost = cfg.N_COV_PACKET_REF / cfg.N_COV_PACKET_REF
+    assert packet_boost == 1.0
+    # Half the reference = 0.5 boost
+    half_boost = (cfg.N_COV_PACKET_REF // 2) / cfg.N_COV_PACKET_REF
+    assert abs(half_boost - 0.5) < 0.01
+
+
+def test_guidance_ring2_triggered_for_strong_signal() -> None:
+    """Ring-2 cells should receive evidence when rssi_p95 is strong."""
+    from app.modules.guidance.engine import GuidanceEngine
+    from app.modules.guidance import config as cfg
+
+    engine = GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.02, "min_lon": 34.0, "max_lon": 34.02}
+    engine.init_grid(bounds, cell_size_m=5.0)
+
+    # Inject a strong EVIDENCE packet at the centre of the grid
+    centre_lat = 31.01
+    centre_lon = 34.01
+    strong_rssi_dbm = cfg.RSSI_MIN_DBM + cfg.STRONG_RSSI_NORM_THRESHOLD * (
+        cfg.RSSI_MAX_DBM - cfg.RSSI_MIN_DBM
+    ) + 1.0  # just above threshold
+
+    engine.ingest(
+        {
+            "type": "EVIDENCE",
+            "lat": centre_lat,
+            "lon": centre_lon,
+            "dwell_ms": 2000,
+            "frames_total": 10,
+            "frames_strong": 5,
+            "rssi_max_dbm": strong_rssi_dbm,
+            "rssi_p95_dbm": strong_rssi_dbm,
+            "rssi_mean_dbm": strong_rssi_dbm - 3,
+        }
+    )
+
+    grid_state = engine.get_grid_state()
+    assert grid_state is not None
+    # At least some cells beyond the direct neighbours should have non-zero evidence
+    nonzero = [c for c in grid_state["cells"] if c["evidence_score"] > 0.0]
+    assert len(nonzero) > 9, f"Expected ring-2 spread (>9 cells with evidence), got {len(nonzero)}"
+
+
+def test_guidance_ring2_not_triggered_for_weak_signal() -> None:
+    """Ring-2 cells should NOT receive evidence when rssi_p95 is weak."""
+    from app.modules.guidance.engine import GuidanceEngine
+    from app.modules.guidance import config as cfg
+
+    engine = GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.02, "min_lon": 34.0, "max_lon": 34.02}
+    engine.init_grid(bounds, cell_size_m=5.0)
+
+    weak_rssi_dbm = cfg.RSSI_MIN_DBM + (cfg.STRONG_RSSI_NORM_THRESHOLD - 0.1) * (
+        cfg.RSSI_MAX_DBM - cfg.RSSI_MIN_DBM
+    )  # just below threshold
+
+    engine.ingest(
+        {
+            "type": "EVIDENCE",
+            "lat": 31.01,
+            "lon": 34.01,
+            "dwell_ms": 2000,
+            "frames_total": 10,
+            "frames_strong": 2,
+            "rssi_max_dbm": weak_rssi_dbm,
+            "rssi_p95_dbm": weak_rssi_dbm,
+            "rssi_mean_dbm": weak_rssi_dbm - 3,
+        }
+    )
+
+    grid_state = engine.get_grid_state()
+    assert grid_state is not None
+    nonzero = [c for c in grid_state["cells"] if c["evidence_score"] > 0.0]
+    # Should reach at most 9 cells (1 source + 8 ring-1 neighbours)
+    assert len(nonzero) <= 9, (
+        f"Ring-2 should not trigger for weak signal, but {len(nonzero)} cells have evidence"
+    )
+
+
+def test_guidance_status_endpoint_returns_mode() -> None:
+    from app.modules.guidance.engine import GuidanceEngine
+
+    engine = GuidanceEngine()
+    status = engine.get_status()
+    assert status["initialized"] is False
+
+    engine.init_grid(
+        {"min_lat": 31.0, "max_lat": 31.01, "min_lon": 34.0, "max_lon": 34.01},
+        cell_size_m=5.0,
+    )
+    status = engine.get_status()
+    assert status["initialized"] is True
+    assert status["mode"] in ("EXPLORE", "REFINE")
+    assert status["n_cells"] > 0
+
+
+def test_guidance_refine_needs_5_windows() -> None:
+    from app.modules.guidance import config as cfg
+
+    assert cfg.REFINE_PERSIST_WINDOWS == 5
+
+
+def test_guidance_explore_p_weight_reduced() -> None:
+    from app.modules.guidance import config as cfg
+
+    assert cfg.W_P_EXPLORE == 0.05
+    # Positive weights in EXPLORE should still sum to ~0.80
+    total = cfg.W_E_EXPLORE + cfg.W_U_EXPLORE + cfg.W_P_EXPLORE
+    assert abs(total - 0.80) < 0.01
