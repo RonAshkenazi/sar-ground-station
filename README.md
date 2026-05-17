@@ -18,7 +18,7 @@ cp .env.example .env
 # 2. Backend (terminal 1)
 cd backend
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 # 3. Frontend (terminal 2)
 cd frontend
@@ -29,6 +29,16 @@ npm run dev
 cd backend && pytest
 npx playwright test
 ```
+
+### Live Mission Pi Connectivity
+
+For live mission mode, the backend must listen on all network interfaces:
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Do not run the backend bound only to `127.0.0.1` or `localhost`. That allows the frontend on the same laptop to work, but the Pi cannot connect to the ground station at the laptop LAN IP, for example `192.168.1.100:8000`. If the frontend shows the Pi as disconnected while the Pi is powered on, first confirm the backend was started with `--host 0.0.0.0`.
 
 ---
 
