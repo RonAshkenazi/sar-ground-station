@@ -2,6 +2,12 @@
 
 Runs on the drone-mounted Pi. Captures Wi-Fi and BLE RF frames, tags them with GPS, and streams scan data + guidance packets to the Ground Station.
 
+## Deploy (run this on the Pi after every code change)
+
+```bash
+cd ~/Desktop/sar-ground-station && git pull && sudo bash airunit/deploy.sh
+```
+
 ---
 
 ## Files
