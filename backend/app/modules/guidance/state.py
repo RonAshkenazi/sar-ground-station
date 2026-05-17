@@ -11,6 +11,7 @@ from .scoring import (
     compute_freshness_score,
     compute_spatial_entropy,
     compute_uncertainty,
+    norm_rssi,
     update_age,
     update_coverage,
     update_evidence_ema,
@@ -191,7 +192,9 @@ def ingest_evidence(state: GuidanceState, packet: dict) -> None:
 
     raw_e = compute_evidence_raw(cs.rssi_p95, cs.rssi_max, frames_total, frames_strong)
     cs.evidence_score = update_evidence_ema(cs.evidence_score, raw_e)
-    cs.coverage_score = update_coverage(cs.coverage_score, dwell_ms)
+    packet_v_boost = frames_total / cfg.N_COV_PACKET_REF
+    time_v_boost = dwell_ms / cfg.T_COV_MS
+    cs.coverage_score = min(1.0, cs.coverage_score + max(time_v_boost, packet_v_boost))
     cs.age_score = 0.0
     cs.uncertainty_score = compute_uncertainty(cs.coverage_score, cs.age_score)
     cs.last_updated_ms = now
@@ -207,6 +210,32 @@ def ingest_evidence(state: GuidanceState, packet: dict) -> None:
         ncs.evidence_score = update_evidence_ema(ncs.evidence_score, alpha * raw_e)
         ncs.last_seen_ms = now
         affected_ids.append(neighbor_id)
+
+    # Ring-2: spread evidence further when signal is strong.
+    if rssi_p95_value is not None and norm_rssi(rssi_p95_value) >= cfg.STRONG_RSSI_NORM_THRESHOLD:
+        ring1_set = set(get_neighbors(cell_id, state.grid))
+        ring2_set: set[int] = set()
+        for r1_id in ring1_set:
+            for r2_id in get_neighbors(r1_id, state.grid):
+                if r2_id != cell_id and r2_id not in ring1_set:
+                    ring2_set.add(r2_id)
+        for r2_id in ring2_set:
+            r2cs = state.cell_states.get(r2_id)
+            if r2cs is None:
+                continue
+            is_diag = (
+                _is_diagonal_neighbor(state.grid, cell_id, r2cs.cell_id)
+                if state.grid.cells.get(r2_id)
+                else False
+            )
+            alpha = (
+                cfg.NEIGHBOR_EVIDENCE_ALPHA_RING2_DIAG
+                if is_diag
+                else cfg.NEIGHBOR_EVIDENCE_ALPHA_RING2_ORTH
+            )
+            r2cs.evidence_score = update_evidence_ema(r2cs.evidence_score, alpha * raw_e)
+            r2cs.last_seen_ms = now
+            affected_ids.append(r2_id)
 
     _refresh_spatial_scores(state, affected_ids)
 

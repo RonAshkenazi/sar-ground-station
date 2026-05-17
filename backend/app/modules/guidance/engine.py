@@ -157,6 +157,26 @@ class GuidanceEngine:
         with self._lock:
             return self._state is not None
 
+    def get_status(self) -> dict:
+        with self._lock:
+            if self._state is None:
+                return {"initialized": False}
+            return {
+                "initialized": True,
+                "mode": self._state.mode,
+                "n_cells": len(self._state.cell_states),
+                "drone_gps_valid": self._state.drone.gps_valid,
+                "evidence_packets_ingested": (
+                    self._state.evidence_diagnostics.evidence_packets_ingested
+                ),
+                "evidence_packets_dropped": (
+                    self._state.evidence_diagnostics.evidence_packets_dropped
+                ),
+                "last_evidence_drop_reason": (
+                    self._state.evidence_diagnostics.last_evidence_drop_reason
+                ),
+            }
+
     def _tick_loop(self) -> None:
         interval_ms = 3000.0
         while True:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.modules.guidance.engine import get_engine
 
@@ -18,10 +18,9 @@ class InitRequest(BaseModel):
 
 
 class UpdateRequest(BaseModel):
-    type: str | None = None
+    model_config = ConfigDict(extra="allow")
 
-    class Config:
-        extra = "allow"
+    type: str | None = None
 
 
 @router.post("/init")
@@ -40,6 +39,11 @@ def init_guidance(body: InitRequest) -> dict:
 def reset_guidance() -> dict:
     get_engine().reset()
     return {"ok": True}
+
+
+@router.get("/status")
+def guidance_status() -> dict:
+    return get_engine().get_status()
 
 
 @router.get("/recommendation")
