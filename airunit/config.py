@@ -29,6 +29,7 @@ BLE_HCI_INTERFACE = "hci0"
 GPS_SERIAL_DEVICE = "/dev/ttyACM0"
 GPS_BAUDRATE = 9600
 MAX_GPS_AGE_SEC = 10.0
+GPS_STATE_FILE = "/tmp/airunit_gps_state.json"
 
 # --- Heartbeat (no-signal) logging ---
 HEARTBEAT_ENABLED = True

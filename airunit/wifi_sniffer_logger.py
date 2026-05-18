@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import config
-from gps_service import start_gps
+from gps_service import start_cached_gps
 
 SSID_RE = re.compile(
     r"(?:Probe (?:Request|Response)|Beacon|Association Request|Reassociation Request) \((.*?)\)"
@@ -230,8 +230,8 @@ def main():
     stats = {"frames": 0}
 
     # GPS
-    print("[gps] Starting GPS service thread...")
-    gps_state, gps_stop, gps_thread = start_gps()
+    print("[gps] Reading shared GPS state from airunit-web...")
+    gps_state, gps_stop, gps_thread = start_cached_gps()
 
     # Channel hopping state
     hop_state = {"channel": config.HOP_BASE_CHANNEL}

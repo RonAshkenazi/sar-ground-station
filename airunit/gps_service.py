@@ -6,8 +6,11 @@ Minimal GPS reader for /dev/ttyACM0.
 - Keeps last state in a thread-safe object that the sniffer can query.
 """
 
+import json
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 import config
@@ -42,24 +45,87 @@ class GpsState:
             self.sats = sats
             self.hdop = hdop
             self._last_update = time.time()
+            state = self._snapshot_locked()
+        write_gps_cache(state)
 
     def get(self) -> Dict[str, Any]:
         with self._lock:
-            if self._last_update is None:
-                age_ms = None
-            else:
-                age_sec = time.time() - self._last_update
-                age_ms = int(age_sec * 1000)
+            return self._snapshot_locked()
 
-            return {
-                "gps_lat": self.lat,
-                "gps_lon": self.lon,
-                "gps_alt_m": self.alt,
-                "gps_fix": self.fix,
-                "gps_num_sats": self.sats,
-                "gps_hdop": self.hdop,
-                "gps_age_ms": age_ms,
-            }
+    def _snapshot_locked(self) -> Dict[str, Any]:
+        if self._last_update is None:
+            age_ms = None
+        else:
+            age_sec = time.time() - self._last_update
+            age_ms = int(age_sec * 1000)
+
+        return {
+            "gps_lat": self.lat,
+            "gps_lon": self.lon,
+            "gps_alt_m": self.alt,
+            "gps_fix": self.fix,
+            "gps_num_sats": self.sats,
+            "gps_hdop": self.hdop,
+            "gps_age_ms": age_ms,
+            "gps_updated_unix": self._last_update,
+        }
+
+
+def _empty_state() -> Dict[str, Any]:
+    return {
+        "gps_lat": None,
+        "gps_lon": None,
+        "gps_alt_m": None,
+        "gps_fix": 0,
+        "gps_num_sats": 0,
+        "gps_hdop": None,
+        "gps_age_ms": None,
+    }
+
+
+def write_gps_cache(state: Dict[str, Any]) -> None:
+    path = Path(getattr(config, "GPS_STATE_FILE", "/tmp/airunit_gps_state.json"))
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    payload = dict(state)
+    payload["gps_updated_unix"] = payload.get("gps_updated_unix") or time.time()
+    try:
+        tmp_path.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp_path, path)
+    except Exception:
+        pass
+
+
+class CachedGpsState:
+    def get(self) -> Dict[str, Any]:
+        path = Path(getattr(config, "GPS_STATE_FILE", "/tmp/airunit_gps_state.json"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return _empty_state()
+
+        updated = data.get("gps_updated_unix")
+        age_ms = None
+        if isinstance(updated, (int, float)):
+            age_ms = max(0, int((time.time() - updated) * 1000))
+
+        fix = int(data.get("gps_fix") or 0)
+        if age_ms is None or age_ms > int(config.MAX_GPS_AGE_SEC * 1000):
+            fix = 0
+
+        return {
+            "gps_lat": data.get("gps_lat"),
+            "gps_lon": data.get("gps_lon"),
+            "gps_alt_m": data.get("gps_alt_m"),
+            "gps_fix": fix,
+            "gps_num_sats": int(data.get("gps_num_sats") or 0),
+            "gps_hdop": data.get("gps_hdop"),
+            "gps_age_ms": age_ms,
+        }
+
+
+class _NoopThread:
+    def join(self, timeout=None) -> None:
+        return None
 
 
 def _to_deg(val: str, direction: str, is_lat: bool) -> Optional[float]:
@@ -160,6 +226,10 @@ def start_gps():
     t = threading.Thread(target=gps_thread, args=(state, stop_event), daemon=True)
     t.start()
     return state, stop_event, t
+
+
+def start_cached_gps():
+    return CachedGpsState(), threading.Event(), _NoopThread()
 
 
 if __name__ == "__main__":
