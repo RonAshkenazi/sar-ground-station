@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import config
-from gps_service import start_cached_gps
+from gps_service import start_gps
 
 
 def ensure_root():
@@ -215,8 +215,8 @@ def main():
     stats = {"packets": 0}
 
     # GPS
-    print("[gps] Reading shared GPS state from airunit-web...")
-    gps_state, gps_stop, gps_thread = start_cached_gps()
+    print("[gps] Starting GPS service thread...")
+    gps_state, gps_stop, gps_thread = start_gps()
 
     # Status thread
     status_stop = threading.Event()
