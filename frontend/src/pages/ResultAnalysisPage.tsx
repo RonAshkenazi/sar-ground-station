@@ -39,9 +39,10 @@ export default function ResultAnalysisPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const csvInputRef = useRef<HTMLInputElement | null>(null)
   const [evalParams, setEvalParams] = useState({
-    ratio_gate: 2.0,
+    ratio_gate: 1.2,
     max_match_dist_m: 200,
-    r_normalize_m: 20.0,
+    r_normalize_m: 30.0,
+    d_free_m: 10.0,
     w_containment: 0.4,
     w_distance: 0.3,
     w_count: 0.2,
@@ -137,7 +138,6 @@ export default function ResultAnalysisPage() {
     try {
       await addGtPoint(session.session_id, point.lat, point.lon)
       await loadState()
-      setAddingGt(false)
     } catch (err: unknown) {
       setError(String(err))
     } finally {
@@ -328,10 +328,13 @@ export default function ResultAnalysisPage() {
                 type="number"
                 step="0.1"
                 min="1.0"
-                value={evalParams.ratio_gate ?? 2.0}
+                value={evalParams.ratio_gate ?? 1.2}
                 onChange={(event) => setEvalParams((previous) => ({ ...previous, ratio_gate: Number(event.target.value) }))}
               />
             </div>
+            <p className="eval-param-hint">
+              Lower = more permissive. 1.0 = always match nearest. 2.0 = strict (nearest must be 2x closer than second-nearest).
+            </p>
             <div className="eval-param-row">
               <label>Max match dist (m)</label>
               <input
@@ -342,7 +345,30 @@ export default function ResultAnalysisPage() {
                 onChange={(event) => setEvalParams((previous) => ({ ...previous, max_match_dist_m: Number(event.target.value) }))}
               />
             </div>
-            {(['r_normalize_m', 'w_containment', 'w_distance', 'w_count', 'w_radius'] as const).map((key) => (
+            <div className="eval-param-row">
+              <label>Free zone (m)</label>
+              <input
+                type="number"
+                step="1"
+                min="0"
+                value={evalParams.d_free_m}
+                onChange={(event) => setEvalParams((previous) => ({ ...previous, d_free_m: Number(event.target.value) }))}
+              />
+            </div>
+            <div className="eval-param-row">
+              <label>Penalty scale (m)</label>
+              <input
+                type="number"
+                step="1"
+                min="1"
+                value={evalParams.r_normalize_m}
+                onChange={(event) => setEvalParams((previous) => ({ ...previous, r_normalize_m: Number(event.target.value) }))}
+              />
+            </div>
+            <p className="eval-param-hint">
+              Distance/Radius: ≤ free zone → 100%. Beyond: score = 1 − ((d − free zone) / penalty scale)².
+            </p>
+            {(['w_containment', 'w_distance', 'w_count', 'w_radius'] as const).map((key) => (
               <label key={key} className="eval-param-row">
                 <span>{key}</span>
                 <input

@@ -99,6 +99,17 @@ export default function AirUnitPage() {
   }, [appendLog])
 
   useEffect(() => {
+    getGuidanceGrid()
+      .then((grid) => {
+        if (grid.initialized) {
+          setGridState(grid)
+          setGuidanceRunning(true)
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
     let ws: WebSocket | null = null
     let closed = false
     let reconnectTimer: number | undefined

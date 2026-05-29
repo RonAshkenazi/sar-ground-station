@@ -321,6 +321,7 @@ export interface EvaluationResult {
     ratio_gate: number
     max_match_dist_m: number
     r_normalize_m: number
+    d_free_m: number
     w_containment: number
     w_distance: number
     w_count: number
@@ -369,6 +370,7 @@ export const runEvaluation = (
     ratio_gate?: number
     max_match_dist_m?: number
     r_normalize_m?: number
+    d_free_m?: number
     w_containment?: number
     w_distance?: number
     w_count?: number

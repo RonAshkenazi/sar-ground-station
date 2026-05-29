@@ -6,9 +6,10 @@ import math
 import statistics
 
 
-_RA_RATIO_GATE: float = 2.0
+_RA_RATIO_GATE: float = 1.2
 _RA_MAX_MATCH_DIST_M: float = 200.0
-_RA_R_NORMALIZE_M: float = 20.0
+_RA_R_NORMALIZE_M: float = 30.0
+_RA_DISTANCE_FREE_M: float = 10.0
 _RA_W_CONTAINMENT: float = 0.40
 _RA_W_DISTANCE: float = 0.30
 _RA_W_COUNT: float = 0.20
@@ -30,6 +31,7 @@ def evaluate(
     ratio_gate: float = _RA_RATIO_GATE,
     max_match_dist_m: float = _RA_MAX_MATCH_DIST_M,
     r_normalize_m: float = _RA_R_NORMALIZE_M,
+    d_free_m: float = _RA_DISTANCE_FREE_M,
     w_containment: float = _RA_W_CONTAINMENT,
     w_distance: float = _RA_W_DISTANCE,
     w_count: float = _RA_W_COUNT,
@@ -189,9 +191,19 @@ def evaluate(
     count_error = n_pred - n_gt
 
     s_containment = coverage
-    s_distance = max(0.0, 1.0 - (median_error / r_normalize_m)) if median_error is not None else 0.0
-    s_count = max(0.0, 1.0 - abs(count_error) / max(n_gt, 1))
-    s_radius = max(0.0, 1.0 - (median_radius / r_normalize_m)) if median_radius is not None else 0.0
+    if median_error is None:
+        s_distance = 0.0
+    elif median_error <= d_free_m:
+        s_distance = 1.0
+    else:
+        s_distance = max(0.0, 1.0 - ((median_error - d_free_m) / r_normalize_m) ** 2)
+    s_count = recall
+    if median_radius is None:
+        s_radius = 0.0
+    elif median_radius <= d_free_m:
+        s_radius = 1.0
+    else:
+        s_radius = max(0.0, 1.0 - ((median_radius - d_free_m) / r_normalize_m) ** 2)
     total_score = w_containment * s_containment + w_distance * s_distance + w_count * s_count + w_radius * s_radius
 
     return {
@@ -221,6 +233,7 @@ def evaluate(
             "ratio_gate": ratio_gate,
             "max_match_dist_m": max_match_dist_m,
             "r_normalize_m": r_normalize_m,
+            "d_free_m": d_free_m,
             "w_containment": w_containment,
             "w_distance": w_distance,
             "w_count": w_count,

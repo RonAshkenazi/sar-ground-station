@@ -105,8 +105,8 @@ export default function EmulatorPage() {
   const [simPhase, setSimPhase] = useState<'idle' | 'lawnmower' | 'adaptive' | 'done'>('idle')
   const [simProgress, setSimProgress] = useState({ done: 0, total: 0 })
   const [speedMps, setSpeedMps] = useState(8)
-  const [altitudeM, setAltitudeM] = useState(30)
-  const [rssiAt1m, setRssiAt1m] = useState(-50)
+  const [altitudeM, setAltitudeM] = useState(10)
+  const [rssiAt1m, setRssiAt1m] = useState(-35)
   const [pathLossN, setPathLossN] = useState(2.8)
   const [noiseStd, setNoiseStd] = useState(4)
   const [strongThrDbm, setStrongThrDbm] = useState(-65)
@@ -387,7 +387,7 @@ export default function EmulatorPage() {
         recPollMs += TICK
         elapsed += TICK
 
-        if (recPollMs >= 3000) {
+        if (recPollMs >= 1000) {
           recPollMs = 0
           try {
             const rec = await getGuidanceRecommendation()

@@ -20,9 +20,10 @@ class ImportGtPointsRequest(BaseModel):
 
 
 class EvaluateRequest(BaseModel):
-    ratio_gate: float = 2.0
+    ratio_gate: float = 1.2
     max_match_dist_m: float = 200.0
-    r_normalize_m: float = 20.0
+    r_normalize_m: float = 30.0
+    d_free_m: float = 10.0
     w_containment: float = 0.40
     w_distance: float = 0.30
     w_count: float = 0.20
@@ -119,6 +120,7 @@ def run_evaluation(session_id: str, body: EvaluateRequest) -> dict:
         ratio_gate=body.ratio_gate,
         max_match_dist_m=body.max_match_dist_m,
         r_normalize_m=body.r_normalize_m,
+        d_free_m=body.d_free_m,
         w_containment=body.w_containment,
         w_distance=body.w_distance,
         w_count=body.w_count,

@@ -141,6 +141,19 @@ def compute_recommendation(state: GuidanceState) -> Optional[GuidanceRecommendat
         if cs.evidence_score >= cfg.E_TARGET_MIN:
             evidence_cell_ids.append(cell_id)
 
+    if state.mode == "EXPLORE":
+        # In EXPLORE mode use all cells — evidence filter would trap the drone at the
+        # first visited cell because every other cell has e≈0 and never qualifies.
+        # U dominates the EXPLORE score (W=0.55), so unvisited cells naturally win.
+        # Once the drone passes near the RF target its E spikes and that cell wins
+        # even before mode switches to REFINE.
+        best_id = max(
+            state.cell_states.keys(),
+            key=lambda cid: state.cell_states[cid].final_score,
+        )
+        return _make_recommendation(state, best_id, now, _reason(state.mode, state.cell_states[best_id]))
+
+    # REFINE mode — lock onto the RF peak using the evidence filter.
     if evidence_cell_ids:
         max_evidence = max(state.cell_states[cid].evidence_score for cid in evidence_cell_ids)
         evidence_cell_ids = [
@@ -150,8 +163,11 @@ def compute_recommendation(state: GuidanceState) -> Optional[GuidanceRecommendat
         ]
 
     if not evidence_cell_ids:
-        return _make_recommendation(state, current_cell_id, now, "Current Pi GPS cell")
+        best_id = max(
+            state.cell_states.keys(),
+            key=lambda cid: state.cell_states[cid].uncertainty_score,
+        )
+        return _make_recommendation(state, best_id, now, "Exploring — no RF evidence yet")
 
     best_id = max(evidence_cell_ids, key=lambda cid: state.cell_states[cid].final_score)
-    best = state.cell_states[best_id]
-    return _make_recommendation(state, best_id, now, _reason(state.mode, best))
+    return _make_recommendation(state, best_id, now, _reason(state.mode, state.cell_states[best_id]))
