@@ -30,10 +30,10 @@ W_P: float = 0.20
 W_D: float = 0.15
 W_R: float = 0.05
 
-W_E_EXPLORE: float = 0.20
-W_U_EXPLORE: float = 0.55
-W_P_EXPLORE: float = 0.05
-W_D_EXPLORE: float = 0.15
+W_E_EXPLORE: float = 0.35
+W_U_EXPLORE: float = 0.38
+W_P_EXPLORE: float = 0.10
+W_D_EXPLORE: float = 0.12
 W_R_EXPLORE: float = 0.05
 
 W_E_REFINE: float = 0.45
@@ -42,10 +42,10 @@ W_P_REFINE: float = 0.30
 W_D_REFINE: float = 0.07
 W_R_REFINE: float = 0.03
 
-REFINE_E_THRESHOLD: float = 0.75
-REFINE_P_THRESHOLD: float = 0.20
-REFINE_PERSIST_WINDOWS: int = 5
-REFINE_MAX_DURATION_SEC: float = 15.0
+REFINE_E_THRESHOLD: float = 0.20
+REFINE_P_THRESHOLD: float = 0.01
+REFINE_PERSIST_WINDOWS: int = 3
+REFINE_MAX_DURATION_SEC: float = 30.0
 
 DEFAULT_CELL_SIZE_M: float = 5.0
 
