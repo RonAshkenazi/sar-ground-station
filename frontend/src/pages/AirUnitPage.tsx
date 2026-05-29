@@ -497,13 +497,13 @@ export default function AirUnitPage() {
         </aside>
 
         <main className="airunit-main">
-          <MapContainer center={mapCenter} zoom={mapZoom} maxZoom={20} className="airunit-map">
+          <MapContainer center={mapCenter} zoom={mapZoom} maxZoom={23} className="airunit-map">
             <SetMapCenter center={mapCenter} zoom={mapZoom} />
             <TileLayer
               attribution='Tiles &copy; Esri &mdash; Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, GIS User Community'
               url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
               maxNativeZoom={18}
-              maxZoom={20}
+              maxZoom={23}
             />
             <MapClickHandler onPick={handleMapPick} />
             {drawBounds && (

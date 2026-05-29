@@ -241,10 +241,12 @@ export default function CalibrationPage() {
           {gtMode === 'manual_map_click' && (
             <div className="manual-map-panel">
               <p className="hint-text">Click the map to set the ground-truth point.</p>
-              <MapContainer center={mapCenter} zoom={15} className="calibration-map">
+              <MapContainer center={mapCenter} zoom={15} maxZoom={23} className="calibration-map">
                 <TileLayer
                   attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  maxNativeZoom={19}
+                  maxZoom={23}
                 />
                 <ManualClickHandler onPick={(lat, lon) => setManualPoint({ lat, lon })} />
                 {track.map((point, index) => (

@@ -324,14 +324,14 @@ export default function OverviewPage() {
                     </button>
                   </div>
                 </div>
-                <MapContainer center={mapCenter} zoom={15} maxZoom={20} className="overview-map">
+                <MapContainer center={mapCenter} zoom={15} maxZoom={23} className="overview-map">
                   {mapLayer === 'satellite' ? (
                     <TileLayer
                       key="satellite"
                       attribution='Tiles &copy; Esri &mdash; Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, GIS User Community'
                       url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
                       maxNativeZoom={18}
-                      maxZoom={20}
+                      maxZoom={23}
                     />
                   ) : (
                     <TileLayer
@@ -339,7 +339,7 @@ export default function OverviewPage() {
                       attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                       url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                       maxNativeZoom={19}
-                      maxZoom={20}
+                      maxZoom={23}
                     />
                   )}
                   {filteredPoints.map((point, index) => (

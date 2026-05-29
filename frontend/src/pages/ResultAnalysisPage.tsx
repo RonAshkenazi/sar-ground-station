@@ -27,6 +27,7 @@ export default function ResultAnalysisPage() {
   const [raState, setRaState] = useState<ResultAnalysisState | null>(null)
   const [evalResult, setEvalResult] = useState<EvaluationResult | null>(null)
   const [addingGt, setAddingGt] = useState(false)
+  const [gtColors, setGtColors] = useState<Record<string, string>>({})
   const [mapLayer, setMapLayer] = useState<MapLayer>('satellite')
   const [showHeatmap, setShowHeatmap] = useState(true)
   const [showUncertaintyRadii, setShowUncertaintyRadii] = useState(true)
@@ -311,6 +312,13 @@ export default function ResultAnalysisPage() {
             <div className="gt-list">
               {(raState?.gt_points ?? []).map((point, index) => (
                 <div key={point.gt_id} className="gt-row">
+                  <input
+                    type="color"
+                    className="gt-color-picker"
+                    value={gtColors[point.gt_id] ?? '#ef4444'}
+                    onChange={(event) => setGtColors((prev) => ({ ...prev, [point.gt_id]: event.target.value }))}
+                    title="GT marker color"
+                  />
                   <span>
                     {point.label || `GT #${index + 1}`} {point.lat.toFixed(5)}, {point.lon.toFixed(5)}
                   </span>
@@ -524,21 +532,21 @@ export default function ResultAnalysisPage() {
               </button>
             </div>
           </div>
-          <MapContainer center={mapCenter} zoom={15} maxZoom={20} className={`result-analysis-map${addingGt ? ' gt-adding-mode' : ''}`}>
+          <MapContainer center={mapCenter} zoom={15} maxZoom={23} className={`result-analysis-map${addingGt ? ' gt-adding-mode' : ''}`}>
             {localization && <SetView center={mapCenter} zoom={16} />}
             {mapLayer === 'satellite' ? (
               <TileLayer
                 attribution="Tiles &copy; Esri"
                 url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
                 maxNativeZoom={18}
-                maxZoom={20}
+                maxZoom={23}
               />
             ) : (
               <TileLayer
                 attribution="&copy; OpenStreetMap"
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 maxNativeZoom={19}
-                maxZoom={20}
+                maxZoom={23}
               />
             )}
             <GtClickHandler enabled={addingGt} onAdd={handleAddGt} />
@@ -578,23 +586,27 @@ export default function ResultAnalysisPage() {
                   <Tooltip>FP: cluster {fp.cluster_id}</Tooltip>
                 </Marker>
               ))}
-            {(raState?.gt_points ?? []).map((point) => (
-              <CircleMarker
-                key={point.gt_id}
-                center={[point.lat, point.lon]}
-                radius={8}
-                pathOptions={
-                  falseNegativeIds.has(point.gt_id)
-                    ? { color: '#dc2626', fillOpacity: 0, weight: 3 }
-                    : { color: '#b91c1c', fillColor: '#ef4444', fillOpacity: 0.9, weight: 2 }
-                }
-              >
-                <Tooltip>
-                  {falseNegativeIds.has(point.gt_id) ? 'FN: ' : ''}
-                  {point.label || point.gt_id.slice(0, 8)}
-                </Tooltip>
-              </CircleMarker>
-            ))}
+            {(raState?.gt_points ?? []).map((point) => {
+              const gtColor = gtColors[point.gt_id] ?? '#ef4444'
+              const isFn = falseNegativeIds.has(point.gt_id)
+              return (
+                <CircleMarker
+                  key={point.gt_id}
+                  center={[point.lat, point.lon]}
+                  radius={8}
+                  pathOptions={
+                    isFn
+                      ? { color: 'white', fillColor: gtColor, fillOpacity: 0.15, weight: 2.5, dashArray: '5 4' }
+                      : { color: 'white', fillColor: gtColor, fillOpacity: 0.92, weight: 2.5 }
+                  }
+                >
+                  <Tooltip>
+                    {isFn ? 'FN: ' : ''}
+                    {point.label || point.gt_id.slice(0, 8)}
+                  </Tooltip>
+                </CircleMarker>
+              )
+            })}
             {evalResult?.ambiguous_gts?.map((ag) => (
               <CircleMarker
                 key={`ambig-${ag.gt_id}`}

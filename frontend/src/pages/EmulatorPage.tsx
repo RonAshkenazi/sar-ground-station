@@ -589,10 +589,12 @@ export default function EmulatorPage() {
           )}
         </aside>
         <main className="emu-map-area">
-          <MapContainer center={DEFAULT_CENTER} zoom={16} maxZoom={20} className="emu-map">
+          <MapContainer center={DEFAULT_CENTER} zoom={16} maxZoom={23} className="emu-map">
             <TileLayer
               attribution="Tiles &copy; Esri"
               url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+              maxNativeZoom={18}
+              maxZoom={23}
             />
             <MapClickHandler onMapClick={handleMapClick} />
             {drawBounds && (

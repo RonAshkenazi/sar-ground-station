@@ -391,7 +391,7 @@ export default function LocalizationPage() {
             </div>
           </div>
 
-          <MapContainer center={mapCenter} zoom={15} maxZoom={20} className="localization-map">
+          <MapContainer center={mapCenter} zoom={15} maxZoom={23} className="localization-map">
             {result && <SetViewOnResult center={mapCenter} zoom={16} />}
             {mapLayer === 'satellite' ? (
               <TileLayer
@@ -399,7 +399,7 @@ export default function LocalizationPage() {
                 attribution='Tiles &copy; Esri &mdash; Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, GIS User Community'
                 url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
                 maxNativeZoom={18}
-                maxZoom={20}
+                maxZoom={23}
               />
             ) : (
               <TileLayer
@@ -407,7 +407,7 @@ export default function LocalizationPage() {
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 maxNativeZoom={19}
-                maxZoom={20}
+                maxZoom={23}
               />
             )}
 
