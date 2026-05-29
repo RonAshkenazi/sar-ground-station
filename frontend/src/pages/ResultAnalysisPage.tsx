@@ -167,15 +167,17 @@ export default function ResultAnalysisPage() {
       const text = await file.text()
       const lines = text.split('\n').filter((line) => line.trim())
       if (lines.length < 2) throw new Error('CSV has no data rows')
-      const headers = lines[0].split(',').map((h) => h.trim().toLowerCase())
+      const headers = parseCsvRow(lines[0]).map((h) => h.trim().toLowerCase())
       const latIdx = headers.indexOf('gps_lat') !== -1 ? headers.indexOf('gps_lat') : headers.indexOf('lat')
       const lonIdx = headers.indexOf('gps_lon') !== -1 ? headers.indexOf('gps_lon') : headers.indexOf('lon')
+      const gpsFixIdx = headers.indexOf('gps_fix')
       if (latIdx === -1 || lonIdx === -1) throw new Error('CSV must have gps_lat/gps_lon or lat/lon columns')
       let sumLat = 0,
         sumLon = 0,
         count = 0
       for (const line of lines.slice(1)) {
-        const cols = line.split(',')
+        const cols = parseCsvRow(line)
+        if (gpsFixIdx !== -1 && cols[gpsFixIdx]?.trim() !== '1') continue
         const lat = parseFloat(cols[latIdx])
         const lon = parseFloat(cols[lonIdx])
         if (!isNaN(lat) && !isNaN(lon)) {
@@ -803,6 +805,36 @@ function pct(value: number): string {
 
 function fmt(value: number | null): string {
   return value === null ? '-' : value.toFixed(1)
+}
+
+function parseCsvRow(line: string): string[] {
+  const fields: string[] = []
+  let current = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (inQuotes) {
+      if (ch === '"' && line[i + 1] === '"') {
+        current += '"'
+        i++
+      } else if (ch === '"') {
+        inQuotes = false
+      } else {
+        current += ch
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true
+      } else if (ch === ',') {
+        fields.push(current)
+        current = ''
+      } else {
+        current += ch
+      }
+    }
+  }
+  fields.push(current)
+  return fields
 }
 
 function heatColor(value: number): string {
