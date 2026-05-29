@@ -7,7 +7,7 @@ import statistics
 
 
 _RA_RATIO_GATE: float = 1.2
-_RA_MAX_MATCH_DIST_M: float = 200.0
+_RA_MAX_MATCH_DIST_M: float = 30.0
 _RA_R_NORMALIZE_M: float = 30.0
 _RA_DISTANCE_FREE_M: float = 10.0
 _RA_W_CONTAINMENT: float = 0.40
@@ -101,7 +101,7 @@ def evaluate(
                 "num_samples": pred.get("num_samples"),
                 "uncertainty_radius_m": raw_radius,
                 "distance_m": distance,
-                "covered": distance <= (float(raw_radius or 0.0)),
+                "covered": distance <= max(float(raw_radius or 0.0), d_free_m),
                 "association_cost": distance,
                 "dominance_margin": dominance_margin,
                 "association_status": "clear_match",

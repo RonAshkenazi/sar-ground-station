@@ -384,7 +384,7 @@ export const runEvaluation = (
 
 export const rerunFromResultAnalysis = (
   session_id: string,
-  stage: 'localization' | 'reid',
+  stage: 'localization' | 'reid' | 'enrichment',
   localization_params?: {
     grid_resolution_m?: number
     dynamic_sigma_alpha?: number
@@ -400,11 +400,18 @@ export const rerunFromResultAnalysis = (
     burst_window_sec?: number
     probe_requests_only?: boolean
   },
+  enrichment_params?: {
+    match_threshold?: number
+    time_window_ms?: number
+    time_score_weight?: number
+    identity_score_weight?: number
+    context_weight?: number
+  },
 ) =>
   apiFetch<{ status: string; execution_id?: string; localization_execution_id?: string }>(
     `/api/sessions/${session_id}/result-analysis/rerun`,
     {
       method: 'POST',
-      body: JSON.stringify({ stage, localization_params, reid_params }),
+      body: JSON.stringify({ stage, localization_params, reid_params, enrichment_params }),
     },
   )

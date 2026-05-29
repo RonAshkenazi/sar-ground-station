@@ -1,0 +1,53 @@
+.helptip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.helptip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-text-muted, #777);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  cursor: help;
+  flex-shrink: 0;
+  line-height: 1;
+  user-select: none;
+  margin-left: 4px;
+}
+
+.helptip-bubble {
+  display: none;
+  position: absolute;
+  left: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #1c1c1c;
+  color: #e8e8e8;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  white-space: normal;
+  width: 230px;
+  z-index: 9999;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+
+.helptip-bubble-left {
+  left: auto;
+  right: 20px;
+}
+
+.helptip-wrap:hover .helptip-bubble {
+  display: block;
+}

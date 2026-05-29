@@ -21,7 +21,7 @@ class ImportGtPointsRequest(BaseModel):
 
 class EvaluateRequest(BaseModel):
     ratio_gate: float = 1.2
-    max_match_dist_m: float = 200.0
+    max_match_dist_m: float = 30.0
     r_normalize_m: float = 30.0
     d_free_m: float = 10.0
     w_containment: float = 0.40
@@ -132,12 +132,20 @@ def run_evaluation(session_id: str, body: EvaluateRequest) -> dict:
 
 @router.post("/sessions/{session_id}/result-analysis/rerun")
 def rerun_from_result_analysis(session_id: str, body: dict, background_tasks: BackgroundTasks) -> dict:
+    from app.api.enrichment import _find_matching_pcap
     from app.api.executions import create_execution
     from app.api.localization import (
         _LOC_06_GRID_RESOLUTION_M,
         _LOC_UNCERTAINTY_ALPHA,
         _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
         _run_localization_task,
+    )
+    from app.modules.enrichment.engine import (
+        _ENR_01_MATCH_THRESHOLD,
+        _ENR_02_TIME_WINDOW_MS,
+        _ENR_03_TIME_SCORE_WEIGHT,
+        _ENR_04_IDENTITY_SCORE_WEIGHT,
+        _ENR_05_WIFI_CONTEXT_WEIGHT,
     )
     from app.modules.reid.engine import (
         _REID_01_ASSOCIATION_THRESHOLD,
@@ -150,8 +158,54 @@ def rerun_from_result_analysis(session_id: str, body: dict, background_tasks: Ba
     stage = body.get("stage", "localization")
     reid_params = body.get("reid_params") or {}
     loc_params = body.get("localization_params") or {}
-    if stage not in {"localization", "reid"}:
-        raise HTTPException(status_code=422, detail="Only localization or reid rerun is supported")
+    enrichment_params = body.get("enrichment_params") or {}
+    if stage not in {"localization", "reid", "enrichment"}:
+        raise HTTPException(status_code=422, detail="Only localization, reid, or enrichment rerun is supported")
+    if stage == "enrichment":
+        enriched_artifact = session.get("active_enriched_artifact")
+        if not enriched_artifact:
+            raise HTTPException(status_code=422, detail="No active ENRICHED artifact available for Enrichment rerun")
+        enriched_path = Path(enriched_artifact)
+        original_stem = enriched_path.stem
+        if original_stem.upper().endswith("_ENRICHED"):
+            original_stem = original_stem[:-9]
+        original_csv_path = enriched_path.parent / f"{original_stem}.csv"
+        if not original_csv_path.exists():
+            raise HTTPException(status_code=422, detail=f"Original scan CSV not found: {original_csv_path.name}")
+        pcap_path = _find_matching_pcap(original_csv_path)
+        if pcap_path is None:
+            raise HTTPException(status_code=422, detail=f"No matching PCAP found for {original_csv_path.name}")
+        calibration = session.get("calibration") or session.get("active_calibration")
+        if not calibration or calibration.get("approved") is not True:
+            raise HTTPException(status_code=422, detail="No calibration available for Enrichment rerun")
+        execution_id = create_execution("enrichment_reid_localization")
+        background_tasks.add_task(
+            _run_enrichment_then_reid_then_localization_task,
+            execution_id,
+            session_id,
+            original_csv_path,
+            pcap_path,
+            session.get("mode", "wifi"),
+            calibration["parameters"],
+            {
+                "match_threshold": enrichment_params.get("match_threshold", _ENR_01_MATCH_THRESHOLD),
+                "time_window_ms": enrichment_params.get("time_window_ms", _ENR_02_TIME_WINDOW_MS),
+                "time_score_weight": enrichment_params.get("time_score_weight", _ENR_03_TIME_SCORE_WEIGHT),
+                "identity_score_weight": enrichment_params.get("identity_score_weight", _ENR_04_IDENTITY_SCORE_WEIGHT),
+                "context_weight": enrichment_params.get("context_weight", _ENR_05_WIFI_CONTEXT_WEIGHT),
+            },
+            {
+                "association_threshold": reid_params.get("association_threshold", _REID_01_ASSOCIATION_THRESHOLD),
+                "seq_gap_max": reid_params.get("seq_gap_max", _REID_WIFI_SEQ_GAP_MAX),
+                "time_gap_max_sec": reid_params.get("time_gap_max_sec", _REID_WIFI_TIME_GAP_MAX_SEC),
+                "burst_window_sec": reid_params.get("burst_window_sec", _REID_WIFI_BURST_WINDOW_SEC),
+                "probe_requests_only": reid_params.get("probe_requests_only", False),
+            },
+            loc_params,
+        )
+        session["last_evaluation"] = None
+        return {"status": "pending", "execution_id": execution_id}
+
     if stage == "reid":
         enriched_artifact = session.get("active_enriched_artifact")
         if not enriched_artifact:
@@ -262,6 +316,94 @@ def _run_reid_then_localization_task(
             status="success",
             warnings=[*reid_result.get("warnings", []), *loc_result.get("warnings", [])],
             result_metadata={"reid": reid_result, "localization": loc_result},
+            error=None,
+        )
+    except Exception as exc:  # pragma: no cover
+        update_execution(execution_id, status="failed", error=str(exc))
+
+
+def _run_enrichment_then_reid_then_localization_task(
+    execution_id: str,
+    session_id: str,
+    csv_path: Path,
+    pcap_path: Path,
+    protocol: str,
+    calibration_parameters: dict,
+    enrichment_params: dict,
+    reid_params: dict,
+    loc_params: dict,
+) -> None:
+    from app.api.executions import update_execution
+    from app.modules.enrichment.engine import run_enrichment
+    from app.modules.localization.engine import (
+        _LOC_02_SEARCH_AREA_BUFFER_M,
+        _LOC_06_GRID_RESOLUTION_M,
+        _LOC_07_DYNAMIC_SIGMA_ALPHA,
+        _LOC_08_CONFIDENCE_CUTOFF,
+        _LOC_UNCERTAINTY_ALPHA,
+        _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
+        run_localization,
+    )
+    from app.modules.reid.engine import run_reid
+    from app.modules.session_navigation.session_store import get_session
+
+    update_execution(execution_id, status="running")
+    try:
+        enr_result = run_enrichment(
+            csv_path=csv_path,
+            pcap_path=pcap_path,
+            protocol=protocol,
+            **enrichment_params,
+        )
+        enriched_csv_path = Path(enr_result["enriched_csv_path"])
+        reid_result = run_reid(
+            enriched_csv_path=enriched_csv_path,
+            protocol=protocol,
+            **reid_params,
+        )
+        reid_csv_path = Path(reid_result["reid_csv_path"])
+        loc_result = run_localization(
+            reid_csv_path=reid_csv_path,
+            calibration=calibration_parameters,
+            bounds_mode=loc_params.get("bounds_mode", "auto_track_plus_buffer"),
+            buffer_m=loc_params.get("buffer_m", _LOC_02_SEARCH_AREA_BUFFER_M),
+            manual_bounds=None,
+            grid_resolution_m=loc_params.get("grid_resolution_m", _LOC_06_GRID_RESOLUTION_M),
+            dynamic_sigma_alpha=loc_params.get("dynamic_sigma_alpha", _LOC_07_DYNAMIC_SIGMA_ALPHA),
+            confidence_cutoff=loc_params.get("confidence_cutoff", _LOC_08_CONFIDENCE_CUTOFF),
+            uncertainty_participation_floor=loc_params.get(
+                "uncertainty_participation_floor",
+                _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
+            ),
+            uncertainty_alpha=loc_params.get("uncertainty_alpha", _LOC_UNCERTAINTY_ALPHA),
+        )
+        session = get_session(session_id)
+        if session is not None:
+            session["active_enrichment"] = {
+                "enriched_csv_path": enr_result["enriched_csv_path"],
+                "quality": enr_result,
+            }
+            session["active_enriched_artifact"] = enr_result["enriched_csv_path"]
+            session["active_reid"] = {
+                "reid_csv_path": reid_result["reid_csv_path"],
+                "quality": reid_result,
+            }
+            session["active_reid_artifact"] = reid_result["reid_csv_path"]
+            session["active_localization"] = loc_result
+            session["current_localization_result"] = loc_result
+        update_execution(
+            execution_id,
+            status="success",
+            warnings=[
+                *enr_result.get("warnings", []),
+                *reid_result.get("warnings", []),
+                *loc_result.get("warnings", []),
+            ],
+            result_metadata={
+                "enrichment": enr_result,
+                "reid": reid_result,
+                "localization": loc_result,
+            },
             error=None,
         )
     except Exception as exc:  # pragma: no cover
