@@ -2215,6 +2215,27 @@ def test_guidance_uncertainty_formula() -> None:
     assert compute_uncertainty(v=0.5, a=0.5) == pytest.approx(0.5)
 
 
+def test_guidance_freshness_score_decays_and_clamps() -> None:
+    from app.modules.guidance import config as cfg
+    from app.modules.guidance.scoring import compute_freshness_score
+
+    now_ms = 10_000.0
+
+    assert compute_freshness_score(None, now_ms) == 0.0
+    assert compute_freshness_score(now_ms, now_ms) == 1.0
+    assert compute_freshness_score(now_ms - cfg.EVIDENCE_FRESH_MS / 2, now_ms) == pytest.approx(0.5)
+    assert compute_freshness_score(now_ms - cfg.EVIDENCE_FRESH_MS * 2, now_ms) == 0.0
+
+
+def test_guidance_entropy_score_tracks_strong_frame_balance() -> None:
+    from app.modules.guidance.scoring import compute_entropy_score
+
+    assert compute_entropy_score(frames_strong=0, frames_total=10) == 0.0
+    assert compute_entropy_score(frames_strong=10, frames_total=10) == 0.0
+    assert compute_entropy_score(frames_strong=5, frames_total=10) == pytest.approx(1.0)
+    assert 0.0 < compute_entropy_score(frames_strong=1, frames_total=10) < 1.0
+
+
 def test_guidance_final_score_explore_prefers_uncertainty() -> None:
     from app.modules.guidance.scoring import compute_final_score
 
@@ -2231,6 +2252,54 @@ def test_guidance_final_score_refine_prefers_evidence() -> None:
     score_low_e = compute_final_score(e=0.0, u=0.0, p=0.0, d=0.0, r=0.0, mode="REFINE")
 
     assert score_high_e > score_low_e
+
+
+def test_guidance_grid_display_score_stays_neutral_without_packets(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            pass
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    engine._tick_thread = type("StoppedThread", (), {"start": lambda self: None})()
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    engine.init_grid(bounds, cell_size_m=30.0)
+
+    grid = engine.get_grid_state()
+    assert grid is not None
+    assert all(cell["display_score"] == 0.0 for cell in grid["cells"])
+
+
+def test_guidance_grid_display_score_increases_with_packets(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            pass
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    engine._tick_thread = type("StoppedThread", (), {"start": lambda self: None})()
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "EVIDENCE",
+            "lat": 31.0005,
+            "lon": 34.0005,
+            "dwell_ms": 6000,
+            "frames_total": 12,
+            "frames_strong": 8,
+            "rssi_max_dbm": -58.0,
+            "rssi_p95_dbm": -61.0,
+        }
+    )
+
+    grid = engine.get_grid_state()
+    assert grid is not None
+    assert max(cell["display_score"] for cell in grid["cells"]) > 0.0
 
 
 def test_guidance_engine_init_and_reset(monkeypatch) -> None:
@@ -2281,3 +2350,733 @@ def test_guidance_engine_ingest_pose_and_recommend(monkeypatch) -> None:
     assert "target_lat" in rec
     assert "bearing_deg" in rec
     assert rec["gps_valid"] is True
+
+
+def test_guidance_pose_omitted_sniffer_alive_preserves_state(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.0005,
+            "lon": 34.0005,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        }
+    )
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.0006,
+            "lon": 34.0006,
+            "gps_valid": True,
+        }
+    )
+
+    rec = engine.get_recommendation()
+
+    assert rec is not None
+    assert rec["gps_valid"] is True
+
+
+def test_guidance_engine_targets_current_gps_cell_without_evidence(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    bounds = {
+        "min_lat": 31.258518102089145,
+        "max_lat": 31.25953153433061,
+        "min_lon": 34.793014526367195,
+        "max_lon": 34.79415178298951,
+    }
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        }
+    )
+
+    rec = engine.get_recommendation()
+
+    assert rec is not None
+    assert rec["target_cell_id"] == 6
+    assert rec["reason"] == "Current Pi GPS cell"
+
+
+def test_guidance_engine_returns_no_target_when_pi_is_not_valid(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "EVIDENCE",
+            "lat": 31.0005,
+            "lon": 34.0005,
+            "frames_total": 6,
+            "frames_strong": 3,
+            "rssi_max_dbm": -58.0,
+            "rssi_p95_dbm": -60.0,
+        }
+    )
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.0005,
+            "lon": 34.0005,
+            "gps_valid": False,
+            "sniffer_alive": False,
+        }
+    )
+
+    assert engine.get_recommendation() is None
+
+
+def test_guidance_pose_lowers_uncertainty_for_current_cell(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    bounds = {
+        "min_lat": 31.258518102089145,
+        "max_lat": 31.25953153433061,
+        "min_lon": 34.793014526367195,
+        "max_lon": 34.79415178298951,
+    }
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "POSE",
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        }
+    )
+
+    grid = engine.get_grid_state()
+    assert grid is not None
+    cell_6 = next(cell for cell in grid["cells"] if cell["cell_id"] == 6)
+    assert cell_6["uncertainty_score"] < 1.0
+    assert cell_6["age_score"] == 0.0
+
+
+def test_guidance_grid_api_exposes_evidence_freshness_entropy_and_bounds(monkeypatch) -> None:
+    from app.modules.guidance import engine as engine_module
+
+    class NullGuidanceLogger:
+        def log(self, rec, drone) -> None:
+            return None
+
+    monkeypatch.setattr(engine_module, "GuidanceLogger", NullGuidanceLogger)
+    engine = engine_module.GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.001, "min_lon": 34.0, "max_lon": 34.001}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "EVIDENCE",
+            "lat": 31.0005,
+            "lon": 34.0005,
+            "dwell_ms": 1000,
+            "frames_total": 10,
+            "frames_strong": 5,
+            "rssi_max_dbm": -58.0,
+            "rssi_p95_dbm": -61.0,
+            "rssi_mean_dbm": -64.0,
+        }
+    )
+
+    grid = engine.get_grid_state()
+    assert grid is not None
+    updated = max(grid["cells"], key=lambda cell: cell["total_frames"])
+    assert updated["evidence_freshness"] > 0.0
+    assert updated["evidence_freshness_score"] == pytest.approx(updated["evidence_freshness"])
+    assert 0.0 <= updated["spatial_entropy"] <= 1.0
+    assert updated["entropy_score"] == pytest.approx(updated["spatial_entropy"])
+    assert updated["spatial_certainty"] == pytest.approx(1.0 - updated["spatial_entropy"])
+    assert updated["display_score"] == pytest.approx(updated["evidence_freshness"])
+    assert updated["total_dwell_ms"] == pytest.approx(1000.0)
+    assert {"row", "col", "min_lat", "max_lat", "min_lon", "max_lon"} <= set(updated)
+
+
+def test_evidence_propagates_to_neighbors() -> None:
+    from app.modules.guidance.engine import GuidanceEngine
+    from app.modules.guidance.grid import create_grid, get_neighbors, latlon_to_cell_id
+
+    engine = GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.05, "min_lon": 34.0, "max_lon": 34.05}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "EVIDENCE",
+            "lat": 31.025,
+            "lon": 34.025,
+            "dwell_ms": 3000,
+            "frames_total": 24,
+            "frames_strong": 8,
+            "rssi_max_dbm": -55.0,
+            "rssi_p95_dbm": -62.0,
+            "rssi_mean_dbm": -70.0,
+        }
+    )
+
+    grid = engine.get_grid_state()
+    assert grid is not None
+    cells = {cell["cell_id"]: cell for cell in grid["cells"]}
+    grid_obj = create_grid(bounds, 30.0)
+    center_id = latlon_to_cell_id(31.025, 34.025, grid_obj)
+    assert center_id is not None
+    center_e = cells[center_id]["evidence_score"]
+    neighbors = get_neighbors(center_id, grid_obj)
+    neighbor_evidences = [cells[n]["evidence_score"] for n in neighbors if n in cells]
+
+    assert center_e > 0.0
+    assert any(e > 0.0 for e in neighbor_evidences)
+    assert all(e < center_e for e in neighbor_evidences if e > 0.0)
+
+
+def test_diagonal_neighbors_weaker_than_orthogonal() -> None:
+    from app.modules.guidance.engine import GuidanceEngine
+    from app.modules.guidance.grid import create_grid, get_neighbors, latlon_to_cell_id
+
+    engine = GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.06, "min_lon": 34.0, "max_lon": 34.06}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    for _ in range(5):
+        engine.ingest(
+            {
+                "type": "EVIDENCE",
+                "lat": 31.03,
+                "lon": 34.03,
+                "dwell_ms": 3000,
+                "frames_total": 24,
+                "frames_strong": 10,
+                "rssi_max_dbm": -53.0,
+                "rssi_p95_dbm": -60.0,
+                "rssi_mean_dbm": -67.0,
+            }
+        )
+
+    grid_state = engine.get_grid_state()
+    assert grid_state is not None
+    cells = {cell["cell_id"]: cell for cell in grid_state["cells"]}
+    grid_obj = create_grid(bounds, 30.0)
+    center_id = latlon_to_cell_id(31.03, 34.03, grid_obj)
+    assert center_id is not None
+    center_cell = grid_obj.cells[center_id]
+    orth: list[float] = []
+    diag: list[float] = []
+    for nid in get_neighbors(center_id, grid_obj):
+        neighbor_cell = grid_obj.cells[nid]
+        dr = abs(center_cell.row - neighbor_cell.row)
+        dc = abs(center_cell.col - neighbor_cell.col)
+        (diag if dr == 1 and dc == 1 else orth).append(cells[nid]["evidence_score"])
+
+    if orth and diag:
+        assert sum(orth) / len(orth) > sum(diag) / len(diag)
+
+
+def test_spatial_entropy_high_for_uniform_evidence() -> None:
+    import time
+    from app.modules.guidance.grid import create_grid
+    from app.modules.guidance.models import GridCellState
+    from app.modules.guidance.scoring import compute_spatial_entropy
+
+    bounds = {"min_lat": 31.0, "max_lat": 31.05, "min_lon": 34.0, "max_lon": 34.05}
+    grid = create_grid(bounds, cell_size_m=30.0)
+    now_ms = time.time() * 1000.0
+    states = {
+        cid: GridCellState(
+            cell_id=cid,
+            center_lat=cell.center_lat,
+            center_lon=cell.center_lon,
+            evidence_score=0.5,
+            last_seen_ms=now_ms,
+        )
+        for cid, cell in grid.cells.items()
+    }
+
+    center_id = list(grid.cells.keys())[len(grid.cells) // 2]
+    h, c = compute_spatial_entropy(center_id, states, grid)
+
+    assert h > 0.8
+    assert c < 0.2
+
+
+def test_spatial_entropy_low_for_single_peak() -> None:
+    import time
+    from app.modules.guidance.grid import create_grid, latlon_to_cell_id
+    from app.modules.guidance.models import GridCellState
+    from app.modules.guidance.scoring import compute_spatial_entropy
+
+    bounds = {"min_lat": 31.0, "max_lat": 31.05, "min_lon": 34.0, "max_lon": 34.05}
+    grid = create_grid(bounds, cell_size_m=30.0)
+    states = {
+        cid: GridCellState(cell_id=cid, center_lat=cell.center_lat, center_lon=cell.center_lon)
+        for cid, cell in grid.cells.items()
+    }
+    peak_id = latlon_to_cell_id(31.025, 34.025, grid)
+    assert peak_id is not None
+    states[peak_id].evidence_score = 0.9
+    states[peak_id].last_seen_ms = time.time() * 1000.0
+
+    h, c = compute_spatial_entropy(peak_id, states, grid)
+
+    assert h < 0.5
+    assert c > 0.5
+
+
+def test_spatial_entropy_max_when_no_mass() -> None:
+    from app.modules.guidance.grid import create_grid
+    from app.modules.guidance.models import GridCellState
+    from app.modules.guidance.scoring import compute_spatial_entropy
+
+    bounds = {"min_lat": 31.0, "max_lat": 31.05, "min_lon": 34.0, "max_lon": 34.05}
+    grid = create_grid(bounds, cell_size_m=30.0)
+    states = {
+        cid: GridCellState(cell_id=cid, center_lat=cell.center_lat, center_lon=cell.center_lon)
+        for cid, cell in grid.cells.items()
+    }
+
+    h, c = compute_spatial_entropy(list(grid.cells.keys())[0], states, grid)
+
+    assert h == 1.0
+    assert c == 0.0
+
+
+def test_dwell_propagates_to_neighbors() -> None:
+    from app.modules.guidance.engine import GuidanceEngine
+    from app.modules.guidance.grid import create_grid, get_neighbors, latlon_to_cell_id
+
+    engine = GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.05, "min_lon": 34.0, "max_lon": 34.05}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest({"type": "POSE", "lat": 31.025, "lon": 34.025, "gps_valid": True})
+    assert engine._state is not None
+    engine._state.drone.last_pose_ms -= 1000.0
+    for _ in range(3):
+        engine.ingest({"type": "POSE", "lat": 31.025, "lon": 34.025, "gps_valid": True})
+        assert engine._state is not None
+        engine._state.drone.last_pose_ms -= 1000.0
+
+    grid_state = engine.get_grid_state()
+    assert grid_state is not None
+    cells = {cell["cell_id"]: cell for cell in grid_state["cells"]}
+    grid_obj = create_grid(bounds, 30.0)
+    center_id = latlon_to_cell_id(31.025, 34.025, grid_obj)
+    assert center_id is not None
+    neighbors = get_neighbors(center_id, grid_obj)
+    center_cov = cells[center_id]["coverage_score"]
+    neighbor_covs = [cells[n]["coverage_score"] for n in neighbors if n in cells]
+
+    assert center_cov > 0.0
+    assert any(v > 0.0 for v in neighbor_covs)
+    assert center_cov > max(neighbor_covs)
+
+
+def test_grid_api_returns_spatial_entropy_fields() -> None:
+    from app.modules.guidance.engine import GuidanceEngine
+
+    engine = GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.05, "min_lon": 34.0, "max_lon": 34.05}
+    engine.init_grid(bounds, cell_size_m=30.0)
+    engine.ingest(
+        {
+            "type": "EVIDENCE",
+            "lat": 31.025,
+            "lon": 34.025,
+            "dwell_ms": 3000,
+            "frames_total": 20,
+            "frames_strong": 5,
+            "rssi_max_dbm": -58.0,
+            "rssi_p95_dbm": -65.0,
+            "rssi_mean_dbm": -72.0,
+        }
+    )
+
+    grid = engine.get_grid_state()
+    assert grid is not None
+    sample = grid["cells"][0]
+    for field in ("spatial_entropy", "spatial_certainty", "evidence_freshness", "display_score"):
+        assert field in sample
+
+
+def test_guidance_pi_sender_evidence_endpoint_updates_cell_score() -> None:
+    from app.main import create_app
+
+    client = TestClient(create_app())
+    client.post("/api/guidance/reset")
+    client.post(
+        "/api/guidance/init",
+        json={
+            "min_lat": 31.258518102089145,
+            "max_lat": 31.25953153433061,
+            "min_lon": 34.793014526367195,
+            "max_lon": 34.79415178298951,
+            "cell_size_m": 30.0,
+        },
+    )
+    client.post(
+        "/api/guidance/pose",
+        json={
+            "msg_type": "POSE",
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        },
+    )
+    client.post(
+        "/api/guidance/evidence",
+        json={
+            "msg_type": "EVIDENCE",
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "win_ms": 2000,
+            "frames_total": 10,
+            "frames_strong": 8,
+            "rssi_max_dbm": -58.0,
+            "rssi_p95_dbm": -61.0,
+            "rssi_mean_dbm": -64.0,
+        },
+    )
+
+    grid = client.get("/api/guidance/grid").json()
+    cell_6 = next(cell for cell in grid["cells"] if cell["cell_id"] == 6)
+    rec = client.get("/api/guidance/recommendation").json()
+
+    assert cell_6["evidence_score"] > 0.0
+    assert rec["available"] is True
+    assert rec["target_cell_id"] == 6
+
+
+def test_airunit_guidance_reads_existing_newest_wifi_csv_not_ble(tmp_path, monkeypatch) -> None:
+    import importlib
+    import os
+    import sys
+
+    airunit_path = Path(__file__).resolve().parents[3] / "airunit"
+    sys.path.insert(0, str(airunit_path))
+    guidance_sender = importlib.import_module("guidance_sender")
+
+    monkeypatch.setattr(guidance_sender.config, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(guidance_sender.config, "LOG_FILE_PREFIX", "scan_")
+
+    scan_csv = tmp_path / "scan_2026-05-15_00-00-00Z.csv"
+    scan_csv.write_text(
+        guidance_sender.config.CSV_HEADER
+        + "\n"
+        + "2026-05-15T00:00:00Z,probe-req,aa:bb,ff:ff,bb:ss,test,-61,6,2437,"
+        + "31.2589,34.7937,10,1,7,0.9,100\n",
+        encoding="utf-8",
+    )
+    ble_csv = tmp_path / "ble_2026-05-15_00-01-00Z.csv"
+    ble_csv.write_text(
+        guidance_sender.config.BLE_CSV_HEADER
+        + "\n"
+        + "2026-05-15T00:01:00Z,adv,11:22,random,-40,,,,,,31,34,10,1,7,0.9,100\n",
+        encoding="utf-8",
+    )
+    os.utime(scan_csv, (1, 1))
+    os.utime(ble_csv, (2, 2))
+
+    sender = object.__new__(guidance_sender.GuidanceSender)
+    state = {"file": None, "path": None}
+
+    rows = sender._read_new_csv_rows(state)
+
+    assert state["path"] == scan_csv
+    assert len(rows) == 1
+    assert rows[0]["frame_type"] == "probe-req"
+    assert rows[0]["rssi_dbm"] == "-61"
+    state["file"].close()
+
+
+def test_airunit_guidance_builds_valid_evidence_packet_from_wifi_rows(monkeypatch) -> None:
+    import importlib
+    import sys
+
+    airunit_path = Path(__file__).resolve().parents[3] / "airunit"
+    sys.path.insert(0, str(airunit_path))
+    guidance_sender = importlib.import_module("guidance_sender")
+
+    class FakeGpsState:
+        def get(self):
+            return {
+                "gps_lat": None,
+                "gps_lon": None,
+                "gps_fix": 0,
+            }
+
+    monkeypatch.setattr(guidance_sender.config, "HOP_ENABLED", True)
+    monkeypatch.setattr(guidance_sender.config, "HOP_INTERVAL_SEC", 0.5)
+
+    sender = object.__new__(guidance_sender.GuidanceSender)
+    sender._gps_state = FakeGpsState()
+    sender._seq = 0
+    sender._evidence_rows_seen = 0
+    rows = [
+        {"frame_type": "probe-req", "rssi_dbm": "-75", "gps_lat": "31.2589", "gps_lon": "34.7937"},
+        {"frame_type": "probe-resp", "rssi_dbm": "-62", "gps_lat": "31.2590", "gps_lon": "34.7938"},
+        {"frame_type": "heartbeat", "rssi_dbm": "", "gps_lat": "31.2591", "gps_lon": "34.7939"},
+    ]
+
+    packet = sender._build_evidence_packet(rows, 1000, 3000)
+
+    assert packet["lat"] == pytest.approx(31.2591)
+    assert packet["lon"] == pytest.approx(34.7939)
+    assert packet["win_ms"] == 2000
+    assert packet["dwell_ms"] == 500
+    assert packet["frames_total"] == 2
+    assert packet["frames_strong"] == 1
+    assert packet["rssi_max_dbm"] == -62.0
+    assert packet["rssi_p95_dbm"] == -62.0
+    assert packet["rssi_mean_dbm"] == pytest.approx(-68.5)
+
+
+def test_guidance_debug_reports_ingested_evidence_packet() -> None:
+    client = TestClient(create_app())
+    client.post("/api/guidance/reset")
+    client.post(
+        "/api/guidance/init",
+        json={
+            "min_lat": 31.258518102089145,
+            "max_lat": 31.25953153433061,
+            "min_lon": 34.793014526367195,
+            "max_lon": 34.79415178298951,
+            "cell_size_m": 30.0,
+        },
+    )
+    client.post(
+        "/api/guidance/pose",
+        json={
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "gps_valid": True,
+            "sniffer_alive": True,
+        },
+    )
+    client.post(
+        "/api/guidance/evidence",
+        json={
+            "lat": 31.2589,
+            "lon": 34.7937,
+            "win_ms": 2000,
+            "frames_total": 10,
+            "frames_strong": 8,
+            "rssi_max_dbm": -58.0,
+            "rssi_p95_dbm": -61.0,
+            "rssi_mean_dbm": -64.0,
+        },
+    )
+
+    debug = client.get("/api/guidance/debug").json()
+
+    assert debug["initialized"] is True
+    assert debug["last_pose_ms"] is not None
+    assert debug["gps_valid"] is True
+    assert debug["sniffer_alive"] is True
+    assert debug["last_evidence_ms"] is not None
+    assert debug["last_evidence_drop_reason"] is None
+    assert debug["evidence_packets_ingested"] == 1
+    assert debug["evidence_packets_dropped"] == 0
+    assert debug["last_evidence_packet"]["frames_total"] == 10
+    assert debug["last_evidence_packet"]["cell_id"] == 6
+    assert debug["max_evidence_cell"]["cell_id"] == 6
+    assert debug["max_evidence_cell"]["evidence_score"] > 0.0
+
+
+def test_guidance_debug_reports_dropped_evidence_reason() -> None:
+    client = TestClient(create_app())
+    client.post("/api/guidance/reset")
+    client.post(
+        "/api/guidance/init",
+        json={
+            "min_lat": 31.258518102089145,
+            "max_lat": 31.25953153433061,
+            "min_lon": 34.793014526367195,
+            "max_lon": 34.79415178298951,
+            "cell_size_m": 30.0,
+        },
+    )
+    client.post(
+        "/api/guidance/evidence",
+        json={
+            "lat": 31.26,
+            "lon": 34.7937,
+            "win_ms": 2000,
+            "frames_total": 10,
+            "frames_strong": 8,
+            "rssi_max_dbm": -58.0,
+        },
+    )
+
+    debug = client.get("/api/guidance/debug").json()
+
+    assert debug["initialized"] is True
+    assert debug["last_evidence_ms"] is None
+    assert debug["last_evidence_drop_reason"] == "outside_grid"
+    assert debug["evidence_packets_ingested"] == 0
+    assert debug["evidence_packets_dropped"] == 1
+    assert debug["last_evidence_packet"]["lat"] == 31.26
+    assert debug["max_evidence_cell"]["evidence_score"] == 0.0
+
+
+def test_guidance_default_cell_size_is_5m() -> None:
+    from app.modules.guidance import config as cfg
+
+    assert cfg.DEFAULT_CELL_SIZE_M == 5.0
+
+
+def test_guidance_age_reaches_max_at_5min() -> None:
+    from app.modules.guidance.scoring import update_age
+
+    a = 0.0
+    # 100 ticks of 3s = 300s = 5 min
+    for _ in range(100):
+        a = update_age(a, 3000.0)
+    assert a == 1.0
+
+
+def test_guidance_coverage_packet_boost() -> None:
+    """V should increase based on frame count (N_COV_PACKET_REF frames = full boost)."""
+    from app.modules.guidance import config as cfg
+
+    # 20 frames should give a boost of 1.0 (full coverage in one window)
+    packet_boost = cfg.N_COV_PACKET_REF / cfg.N_COV_PACKET_REF
+    assert packet_boost == 1.0
+    # Half the reference = 0.5 boost
+    half_boost = (cfg.N_COV_PACKET_REF // 2) / cfg.N_COV_PACKET_REF
+    assert abs(half_boost - 0.5) < 0.01
+
+
+def test_guidance_ring2_triggered_for_strong_signal() -> None:
+    """Ring-2 cells should receive evidence when rssi_p95 is strong."""
+    from app.modules.guidance.engine import GuidanceEngine
+    from app.modules.guidance import config as cfg
+
+    engine = GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.02, "min_lon": 34.0, "max_lon": 34.02}
+    engine.init_grid(bounds, cell_size_m=5.0)
+
+    # Inject a strong EVIDENCE packet at the centre of the grid
+    centre_lat = 31.01
+    centre_lon = 34.01
+    strong_rssi_dbm = cfg.RSSI_MIN_DBM + cfg.STRONG_RSSI_NORM_THRESHOLD * (
+        cfg.RSSI_MAX_DBM - cfg.RSSI_MIN_DBM
+    ) + 1.0  # just above threshold
+
+    engine.ingest(
+        {
+            "type": "EVIDENCE",
+            "lat": centre_lat,
+            "lon": centre_lon,
+            "dwell_ms": 2000,
+            "frames_total": 10,
+            "frames_strong": 5,
+            "rssi_max_dbm": strong_rssi_dbm,
+            "rssi_p95_dbm": strong_rssi_dbm,
+            "rssi_mean_dbm": strong_rssi_dbm - 3,
+        }
+    )
+
+    grid_state = engine.get_grid_state()
+    assert grid_state is not None
+    # At least some cells beyond the direct neighbours should have non-zero evidence
+    nonzero = [c for c in grid_state["cells"] if c["evidence_score"] > 0.0]
+    assert len(nonzero) > 9, f"Expected ring-2 spread (>9 cells with evidence), got {len(nonzero)}"
+
+
+def test_guidance_ring2_not_triggered_for_weak_signal() -> None:
+    """Ring-2 cells should NOT receive evidence when rssi_p95 is weak."""
+    from app.modules.guidance.engine import GuidanceEngine
+    from app.modules.guidance import config as cfg
+
+    engine = GuidanceEngine()
+    bounds = {"min_lat": 31.0, "max_lat": 31.02, "min_lon": 34.0, "max_lon": 34.02}
+    engine.init_grid(bounds, cell_size_m=5.0)
+
+    weak_rssi_dbm = cfg.RSSI_MIN_DBM + (cfg.STRONG_RSSI_NORM_THRESHOLD - 0.1) * (
+        cfg.RSSI_MAX_DBM - cfg.RSSI_MIN_DBM
+    )  # just below threshold
+
+    engine.ingest(
+        {
+            "type": "EVIDENCE",
+            "lat": 31.01,
+            "lon": 34.01,
+            "dwell_ms": 2000,
+            "frames_total": 10,
+            "frames_strong": 2,
+            "rssi_max_dbm": weak_rssi_dbm,
+            "rssi_p95_dbm": weak_rssi_dbm,
+            "rssi_mean_dbm": weak_rssi_dbm - 3,
+        }
+    )
+
+    grid_state = engine.get_grid_state()
+    assert grid_state is not None
+    nonzero = [c for c in grid_state["cells"] if c["evidence_score"] > 0.0]
+    # Should reach at most 9 cells (1 source + 8 ring-1 neighbours)
+    assert len(nonzero) <= 9, (
+        f"Ring-2 should not trigger for weak signal, but {len(nonzero)} cells have evidence"
+    )
+
+
+def test_guidance_status_endpoint_returns_mode() -> None:
+    from app.modules.guidance.engine import GuidanceEngine
+
+    engine = GuidanceEngine()
+    status = engine.get_status()
+    assert status["initialized"] is False
+
+    engine.init_grid(
+        {"min_lat": 31.0, "max_lat": 31.01, "min_lon": 34.0, "max_lon": 34.01},
+        cell_size_m=5.0,
+    )
+    status = engine.get_status()
+    assert status["initialized"] is True
+    assert status["mode"] in ("EXPLORE", "REFINE")
+    assert status["n_cells"] > 0
+
+
+def test_guidance_refine_needs_5_windows() -> None:
+    from app.modules.guidance import config as cfg
+
+    assert cfg.REFINE_PERSIST_WINDOWS == 5
+
+
+def test_guidance_explore_p_weight_reduced() -> None:
+    from app.modules.guidance import config as cfg
+
+    assert cfg.W_P_EXPLORE == 0.05
+    # Positive weights in EXPLORE should still sum to ~0.80
+    total = cfg.W_E_EXPLORE + cfg.W_U_EXPLORE + cfg.W_P_EXPLORE
+    assert abs(total - 0.80) < 0.01

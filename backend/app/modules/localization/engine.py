@@ -8,9 +8,9 @@ from typing import Any
 
 _LOC_06_GRID_RESOLUTION_M: float = 2.0  # Founder decision: 2m grid resolution
 _LOC_07_DYNAMIC_SIGMA_ALPHA: float = 0.05  # FD: Krypto-inspired dynamic sigma; legacy default
-_LOC_08_CONFIDENCE_CUTOFF: float = 0.50  # FD-L2: legacy vis_thresh; operator-tunable
-_LOC_UNCERTAINTY_PARTICIPATION_FLOOR: float = 0.50  # min posterior for a cell to enter spread calc
-_LOC_UNCERTAINTY_ALPHA: float = 2.0  # radius = alpha * weighted_sigma; needs GT calibration
+_LOC_08_CONFIDENCE_CUTOFF: float = 0.75  # FD-L2: legacy vis_thresh; operator-tunable
+_LOC_UNCERTAINTY_PARTICIPATION_FLOOR: float = 0.80  # min posterior for a cell to enter spread calc
+_LOC_UNCERTAINTY_ALPHA: float = 1.5  # radius = alpha * weighted_sigma; needs GT calibration
 _LOC_13_MIN_SAMPLES_PER_CLUSTER: int = 3
 _LOC_02_SEARCH_AREA_BUFFER_M: float = 20.0
 _LOC_RANSAC_ITERATIONS: int = 100

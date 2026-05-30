@@ -24,9 +24,15 @@ class GridCellState:
     age_score: float = 0.0
     uncertainty_score: float = 0.0
     peak_score: float = 0.0
+    evidence_freshness_score: float = 0.0
+    entropy_score: float = 0.0
+    spatial_entropy: float = 1.0
+    spatial_certainty: float = 0.0
+    evidence_freshness: float = 0.0
     travel_cost: float = 0.0
     oscillation_penalty: float = 0.0
     final_score: float = 0.0
+    display_score: float = 0.0
 
     rssi_max: Optional[float] = None
     rssi_p95: Optional[float] = None
@@ -64,6 +70,15 @@ class HealthState:
 
 
 @dataclass
+class EvidenceDiagnostics:
+    last_evidence_ms: Optional[float] = None
+    last_evidence_drop_reason: Optional[str] = None
+    last_evidence_packet: Optional[dict] = None
+    evidence_packets_ingested: int = 0
+    evidence_packets_dropped: int = 0
+
+
+@dataclass
 class GuidanceGrid:
     bounds: dict
     cell_size_m: float
@@ -78,6 +93,7 @@ class GuidanceState:
     cell_states: dict[int, GridCellState] = field(default_factory=dict)
     drone: DroneState = field(default_factory=DroneState)
     health: HealthState = field(default_factory=HealthState)
+    evidence_diagnostics: EvidenceDiagnostics = field(default_factory=EvidenceDiagnostics)
     mode: str = "EXPLORE"
     previous_target_id: Optional[int] = None
     refine_start_ms: Optional[float] = None

@@ -10,6 +10,8 @@ import {
   type InventoryResult,
   type ReIdQuality,
 } from '../api/sessions'
+import HelpTip from '../components/HelpTip'
+import { HELP } from '../helpTexts'
 import { useSession } from '../state/SessionContext'
 import './ReIdEnrichmentPage.css'
 
@@ -270,14 +272,24 @@ export default function ReIdEnrichmentPage() {
         {selectedCsv && (
           <div className={`status-panel ${pcapMatch ? 'status-ok' : 'status-blocked'}`}>
             {pcapMatch
-              ? `PCAP found: ${pcapMatch.filename}`
-              : 'No matching PCAP - enrichment blocked'}
+              ? (
+                <>
+                  PCAP <HelpTip text={HELP.pcap} /> found: {pcapMatch.filename}
+                </>
+              )
+              : (
+                <>
+                  No matching PCAP <HelpTip text={HELP.pcap} /> - enrichment blocked
+                </>
+              )}
           </div>
         )}
 
         {existingArtifact && (
           <div className="artifact-panel">
-            <span>Existing ENRICHED artifact detected: {existingArtifact.filename}</span>
+            <span>
+              Existing ENRICHED artifact <HelpTip text={HELP.enriched_artifact} /> detected: {existingArtifact.filename}
+            </span>
             <button className="btn-secondary" disabled={activating} onClick={handleActivate}>
               {activating ? 'Activating...' : 'Activate for Re-ID'}
             </button>
@@ -304,7 +316,9 @@ export default function ReIdEnrichmentPage() {
               <dd>{quality.total_rows.toLocaleString()}</dd>
               <dt>Matched rows</dt>
               <dd>{quality.matched_rows.toLocaleString()}</dd>
-              <dt>Match rate</dt>
+              <dt>
+                Match rate <HelpTip text={HELP.match_rate} />
+              </dt>
               <dd>{(quality.match_rate * 100).toFixed(1)}%</dd>
             </dl>
             {quality.warnings.map((warning) => (
@@ -322,7 +336,7 @@ export default function ReIdEnrichmentPage() {
 
         <div className="control-section">
           <label htmlFor="reid-enriched" className="field-label">
-            Enriched Artifact
+            Enriched Artifact <HelpTip text={HELP.enriched_artifact} />
           </label>
           <select
             id="reid-enriched"
@@ -355,7 +369,7 @@ export default function ReIdEnrichmentPage() {
           <h3 className="panel-title">Re-ID Settings</h3>
           <div className="settings-grid">
             <label>
-              Association
+              Association <HelpTip text={HELP.reid_association_threshold} />
               <select
                 value={reidSettings.association_threshold}
                 onChange={(event) =>
@@ -368,7 +382,7 @@ export default function ReIdEnrichmentPage() {
               </select>
             </label>
             <label>
-              Seq gap
+              Seq gap <HelpTip text={HELP.reid_seq_gap_max} />
               <select
                 value={reidSettings.seq_gap_max}
                 onChange={(event) => setReidSettings((previous) => ({ ...previous, seq_gap_max: Number(event.target.value) }))}
@@ -379,7 +393,7 @@ export default function ReIdEnrichmentPage() {
               </select>
             </label>
             <label>
-              Time gap
+              Time gap <HelpTip text={HELP.reid_time_gap_max_sec} />
               <select
                 value={reidSettings.time_gap_max_sec}
                 onChange={(event) =>
@@ -392,7 +406,7 @@ export default function ReIdEnrichmentPage() {
               </select>
             </label>
             <label>
-              Burst window
+              Burst window <HelpTip text={HELP.reid_burst_window_sec} />
               <select
                 value={reidSettings.burst_window_sec}
                 onChange={(event) =>
@@ -412,7 +426,7 @@ export default function ReIdEnrichmentPage() {
                   setReidSettings((previous) => ({ ...previous, probe_requests_only: event.target.checked }))
                 }
               />
-              Probe requests only
+              Probe requests only <HelpTip text={HELP.reid_probe_requests_only} />
             </label>
           </div>
         </div>
@@ -433,13 +447,21 @@ export default function ReIdEnrichmentPage() {
             <dl className="quality-grid">
               <dt>Total rows</dt>
               <dd>{reidQuality.total_rows.toLocaleString()}</dd>
-              <dt>Static clusters</dt>
+              <dt>
+                Static clusters <HelpTip text={HELP.static_clusters} />
+              </dt>
               <dd>{reidQuality.static_cluster_count.toLocaleString()}</dd>
-              <dt>Unique dynamic MACs</dt>
+              <dt>
+                Unique dynamic MACs <HelpTip text={HELP.unique_dynamic_macs} />
+              </dt>
               <dd>{reidQuality.unique_dynamic_mac_count?.toLocaleString() ?? '-'}</dd>
-              <dt>Dynamic clusters</dt>
+              <dt>
+                Dynamic clusters <HelpTip text={HELP.dynamic_clusters} />
+              </dt>
               <dd>{reidQuality.dynamic_cluster_count.toLocaleString()}</dd>
-              <dt>Noise clusters</dt>
+              <dt>
+                Noise clusters <HelpTip text={HELP.noise_clusters} />
+              </dt>
               <dd>{reidQuality.noise_cluster_count.toLocaleString()}</dd>
             </dl>
             {reidQuality.warnings.map((warning) => (

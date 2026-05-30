@@ -9,6 +9,8 @@ import {
   type InventoryResult,
   type LocalizationRunResult,
 } from '../api/sessions'
+import HelpTip from '../components/HelpTip'
+import { HELP } from '../helpTexts'
 import { useSession } from '../state/SessionContext'
 import type { SessionState } from '../types'
 import './LocalizationPage.css'
@@ -36,9 +38,9 @@ export default function LocalizationPage() {
   const [settingsOpen, setSettingsOpen] = useState(true)
   const [locSettings, setLocSettings] = useState({
     dynamic_sigma_alpha: 0.05,
-    confidence_cutoff: 0.5,
-    uncertainty_participation_floor: 0.5,
-    uncertainty_alpha: 2.0,
+    confidence_cutoff: 0.75,
+    uncertainty_participation_floor: 0.8,
+    uncertainty_alpha: 1.5,
   })
 
   function confidenceBadge(tier: string | undefined) {
@@ -159,7 +161,7 @@ export default function LocalizationPage() {
     <div className="localization-page">
       <div className="localization-top-bar">
         <label htmlFor="localization-reid-select" className="field-label">
-          REID Artifact
+          REID Artifact <HelpTip text={HELP.reid_artifact} />
         </label>
         <select
           id="localization-reid-select"
@@ -204,7 +206,9 @@ export default function LocalizationPage() {
             {settingsOpen && (
               <div className="localization-settings-grid">
                 <label className="loc-param-row">
-                  dynamic_sigma_alpha
+                  <span>
+                    dynamic_sigma_alpha <HelpTip text={HELP.loc_dynamic_sigma_alpha} />
+                  </span>
                   <input
                     type="number"
                     step="0.01"
@@ -218,7 +222,9 @@ export default function LocalizationPage() {
                   />
                 </label>
                 <label className="loc-param-row">
-                  confidence_cutoff
+                  <span>
+                    confidence_cutoff <HelpTip text={HELP.loc_confidence_cutoff} />
+                  </span>
                   <input
                     type="number"
                     step="0.01"
@@ -232,7 +238,9 @@ export default function LocalizationPage() {
                   />
                 </label>
                 <label className="loc-param-row">
-                  participation_floor
+                  <span>
+                    participation_floor <HelpTip text={HELP.loc_uncertainty_participation_floor} />
+                  </span>
                   <input
                     type="number"
                     step="0.01"
@@ -246,7 +254,9 @@ export default function LocalizationPage() {
                   />
                 </label>
                 <label className="loc-param-row">
-                  uncertainty_alpha
+                  <span>
+                    uncertainty_alpha <HelpTip text={HELP.loc_uncertainty_alpha} />
+                  </span>
                   <input
                     type="number"
                     step="0.01"
@@ -295,12 +305,18 @@ export default function LocalizationPage() {
                     <th></th>
                     <th></th>
                     <th>Cluster ID</th>
-                    <th>Type</th>
+                    <th>
+                      Type <HelpTip text={HELP.cluster_type_static} />
+                    </th>
                     <th>Status</th>
                     <th>Samples</th>
                     <th>Peaks</th>
-                    <th>Radius (m)</th>
-                    <th>Confidence</th>
+                    <th>
+                      Radius (m) <HelpTip text={HELP.uncertainty_radius} />
+                    </th>
+                    <th>
+                      Confidence <HelpTip text={HELP.cluster_confidence} />
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -352,7 +368,7 @@ export default function LocalizationPage() {
                 checked={showStaticClusters}
                 onChange={(event) => setShowStaticClusters(event.target.checked)}
               />
-              Show static clusters
+              Show static clusters <HelpTip text={HELP.show_static_clusters} left />
             </label>
             <label>
               <input
@@ -360,13 +376,13 @@ export default function LocalizationPage() {
                 checked={showNoiseClusters}
                 onChange={(event) => setShowNoiseClusters(event.target.checked)}
               />
-              Show noise cluster
+              Show noise cluster <HelpTip text={HELP.show_noise_cluster} left />
             </label>
           </div>
           <div className="map-controls">
             <label className="map-control-check">
               <input type="checkbox" checked={showHeatmap} onChange={(e) => setShowHeatmap(e.target.checked)} />
-              Heatmap
+              Heatmap <HelpTip text={HELP.heatmap} left />
             </label>
             <label className="map-control-check">
               <input
@@ -374,11 +390,11 @@ export default function LocalizationPage() {
                 checked={showUncertaintyRadii}
                 onChange={(e) => setShowUncertaintyRadii(e.target.checked)}
               />
-              Radii
+              Radii <HelpTip text={HELP.radii} left />
             </label>
             <label className="map-control-check">
               <input type="checkbox" checked={showPeaks} onChange={(e) => setShowPeaks(e.target.checked)} />
-              Peaks
+              Peaks <HelpTip text={HELP.peaks} left />
             </label>
             <div className="map-controls-divider" />
             <div className="layer-toggle">
@@ -391,7 +407,7 @@ export default function LocalizationPage() {
             </div>
           </div>
 
-          <MapContainer center={mapCenter} zoom={15} maxZoom={20} className="localization-map">
+          <MapContainer center={mapCenter} zoom={15} maxZoom={23} className="localization-map">
             {result && <SetViewOnResult center={mapCenter} zoom={16} />}
             {mapLayer === 'satellite' ? (
               <TileLayer
@@ -399,7 +415,7 @@ export default function LocalizationPage() {
                 attribution='Tiles &copy; Esri &mdash; Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, GIS User Community'
                 url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
                 maxNativeZoom={18}
-                maxZoom={20}
+                maxZoom={23}
               />
             ) : (
               <TileLayer
@@ -407,7 +423,7 @@ export default function LocalizationPage() {
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 maxNativeZoom={19}
-                maxZoom={20}
+                maxZoom={23}
               />
             )}
 

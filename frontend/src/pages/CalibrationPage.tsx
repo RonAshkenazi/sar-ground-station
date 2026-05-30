@@ -11,6 +11,8 @@ import {
   type CalibrationState,
   type OverviewResult,
 } from '../api/sessions'
+import HelpTip from '../components/HelpTip'
+import { HELP } from '../helpTexts'
 import { useSession } from '../state/SessionContext'
 import './CalibrationPage.css'
 
@@ -159,7 +161,7 @@ export default function CalibrationPage() {
 
         <section className="control-section">
           <label htmlFor="calibration-csv" className="field-label">
-            Calibration CSV
+            Calibration CSV <HelpTip text={HELP.calibration_csv} />
           </label>
           <select
             id="calibration-csv"
@@ -241,10 +243,12 @@ export default function CalibrationPage() {
           {gtMode === 'manual_map_click' && (
             <div className="manual-map-panel">
               <p className="hint-text">Click the map to set the ground-truth point.</p>
-              <MapContainer center={mapCenter} zoom={15} className="calibration-map">
+              <MapContainer center={mapCenter} zoom={15} maxZoom={23} className="calibration-map">
                 <TileLayer
                   attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  maxNativeZoom={19}
+                  maxZoom={23}
                 />
                 <ManualClickHandler onPick={(lat, lon) => setManualPoint({ lat, lon })} />
                 {track.map((point, index) => (
@@ -296,7 +300,7 @@ export default function CalibrationPage() {
                   checked={enableRansac}
                   onChange={(event) => setEnableRansac(event.target.checked)}
                 />
-                Enable RANSAC
+                Enable RANSAC <HelpTip text={HELP.ransac} />
               </label>
               <NumberField label="Threshold dB" value={ransacThreshold} min={1} max={15} onChange={setRansacThreshold} />
               <NumberField label="Iterations" value={ransacIterations} min={10} max={1000} onChange={setRansacIterations} />
@@ -391,6 +395,7 @@ function NumberField({
   max,
   step,
   onChange,
+  helpText,
 }: {
   label: string
   value: number
@@ -398,10 +403,13 @@ function NumberField({
   max: number
   step?: number
   onChange: (value: number) => void
+  helpText?: string
 }) {
   return (
     <label className="inline-field">
-      <span className="field-label">{label}</span>
+      <span className="field-label">
+        {label} {helpText && <HelpTip text={helpText} />}
+      </span>
       <input
         type="number"
         value={value}
@@ -421,23 +429,33 @@ function ParameterTable({ state }: { state: CalibrationRunResult }) {
     <table className="parameter-table">
       <tbody>
         <tr>
-          <th>RSSI at 1m</th>
+          <th>
+            RSSI at 1m <HelpTip text={HELP.rssi_at_1m} />
+          </th>
           <td>{state.parameters.rssi_at_1m} dBm</td>
         </tr>
         <tr>
-          <th>Path loss n</th>
+          <th>
+            Path loss n <HelpTip text={HELP.path_loss_n} />
+          </th>
           <td>{state.parameters.path_loss_n}</td>
         </tr>
         <tr>
-          <th>Sigma</th>
+          <th>
+            Sigma <HelpTip text={HELP.calib_sigma} />
+          </th>
           <td>{state.parameters.sigma}</td>
         </tr>
         <tr>
-          <th>R²</th>
+          <th>
+            R² <HelpTip text={HELP.r_squared} />
+          </th>
           <td>{state.fit_quality.r2}</td>
         </tr>
         <tr>
-          <th>Inliers</th>
+          <th>
+            Inliers <HelpTip text={HELP.inliers} />
+          </th>
           <td>
             {state.fit_quality.inlier_count} / {state.fit_quality.sample_count} (
             {(state.fit_quality.inlier_ratio * 100).toFixed(1)}%)

@@ -31,6 +31,12 @@ export const getGuidanceGrid = () => apiFetch<GuidanceGridState>('/api/guidance/
 export const resetGuidance = () =>
   apiFetch<{ ok: boolean }>('/api/guidance/reset', { method: 'POST' })
 
+export const ingestGuidancePacket = (packet: Record<string, unknown>) =>
+  apiFetch<{ ok: boolean }>('/api/guidance/update', {
+    method: 'POST',
+    body: JSON.stringify(packet),
+  })
+
 export interface PiFile {
   name: string
   size_bytes: number
@@ -69,6 +75,10 @@ export interface GridCell {
   coverage_score: number
   age_score: number
   final_score: number
+  display_score?: number
+  spatial_entropy?: number
+  spatial_certainty?: number
+  evidence_freshness?: number
 }
 
 export interface GuidanceGridState {

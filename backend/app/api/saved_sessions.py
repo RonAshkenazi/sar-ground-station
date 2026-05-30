@@ -16,6 +16,7 @@ router = APIRouter()
 
 @router.post("/sessions/{session_id}/save")
 def save_session(session_id: str) -> dict:
+    from app.modules.result_analysis.gt_store import get_gt_points
     from app.modules.session_navigation.session_store import get_session
 
     session = get_session(session_id)
@@ -35,17 +36,29 @@ def save_session(session_id: str) -> dict:
     save_dir = get_saved_scans_dir() / session["folder_id"] / saved_id
     save_dir.mkdir(parents=True, exist_ok=False)
 
+    gt_points = get_gt_points(session_id)
+    last_evaluation = session.get("last_evaluation")
+
     meta = SavedSessionState(
         scan_folder_id=session["folder_id"],
         mode=session["mode"],
         saved_artifacts={"reid_csv": reid_csv_path.name},
         saved_at_utc=saved_at_utc,
         session_calibration=session.get("active_calibration"),
+        ground_truth_state={"count": len(gt_points)} if gt_points else None,
+        final_analysis_parameters=(last_evaluation or {}).get("eval_params"),
     ).model_dump()
 
     _write_json(save_dir / "session_meta.json", meta)
     _write_json(save_dir / "calibration.json", session.get("active_calibration"))
     _write_json(save_dir / "localization.json", localization)
+    if gt_points:
+        _write_json(save_dir / "ground_truth.json", gt_points)
+    if last_evaluation:
+        _write_json(save_dir / "evaluation.json", last_evaluation)
+    active_reid = session.get("active_reid")
+    if active_reid:
+        _write_json(save_dir / "reid_quality.json", active_reid)
     shutil.copy2(reid_csv_path, save_dir / reid_csv_path.name)
 
     return {"saved_id": saved_id, "folder_id": session["folder_id"], "saved_at_utc": saved_at_utc}
@@ -102,6 +115,22 @@ def resume_saved_session(saved_id: str) -> dict:
         if not destination.exists() and destination.is_relative_to(data_folder):
             shutil.copy2(saved_reid, destination)
         session["active_reid_artifact"] = str(destination)
+
+    gt_path = save_dir / "ground_truth.json"
+    if gt_path.exists():
+        from app.modules.result_analysis.gt_store import import_gt_points
+
+        gt_points = _read_json(gt_path)
+        if isinstance(gt_points, list) and gt_points:
+            import_gt_points(session["session_id"], gt_points)
+
+    eval_path = save_dir / "evaluation.json"
+    if eval_path.exists():
+        session["last_evaluation"] = _read_json(eval_path)
+
+    reid_quality_path = save_dir / "reid_quality.json"
+    if reid_quality_path.exists():
+        session["active_reid"] = _read_json(reid_quality_path)
 
     return session
 

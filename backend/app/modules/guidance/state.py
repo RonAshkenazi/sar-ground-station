@@ -2,19 +2,54 @@ from __future__ import annotations
 
 import time
 
-from .grid import latlon_to_cell_id
+from .grid import get_neighbors, latlon_to_cell_id
 from .models import GridCellState, GuidanceGrid, GuidanceState
 from .scoring import (
+    compute_entropy_score,
+    compute_evidence_freshness,
     compute_evidence_raw,
+    compute_freshness_score,
+    compute_spatial_entropy,
     compute_uncertainty,
+    norm_rssi,
     update_age,
     update_coverage,
     update_evidence_ema,
+)
+from . import config as cfg
+
+
+EVIDENCE_PACKET_SUMMARY_KEYS = (
+    "type",
+    "msg_type",
+    "lat",
+    "lon",
+    "dwell_ms",
+    "win_ms",
+    "frames_total",
+    "frames_strong",
+    "rssi_max_dbm",
+    "rssi_p95_dbm",
+    "rssi_mean_dbm",
 )
 
 
 def _now_ms() -> float:
     return time.time() * 1000.0
+
+
+def _packet_summary(packet: dict, cell_id: int | None = None) -> dict:
+    summary = {key: packet.get(key) for key in EVIDENCE_PACKET_SUMMARY_KEYS if key in packet}
+    if cell_id is not None:
+        summary["cell_id"] = cell_id
+    return summary
+
+
+def _drop_evidence(state: GuidanceState, packet: dict, reason: str, cell_id: int | None = None) -> None:
+    diag = state.evidence_diagnostics
+    diag.evidence_packets_dropped += 1
+    diag.last_evidence_drop_reason = reason
+    diag.last_evidence_packet = _packet_summary(packet, cell_id)
 
 
 def init_cell_states(grid: GuidanceGrid) -> dict[int, GridCellState]:
@@ -28,6 +63,33 @@ def init_cell_states(grid: GuidanceGrid) -> dict[int, GridCellState]:
     }
 
 
+def _is_diagonal_neighbor(grid: GuidanceGrid, cell_id: int, neighbor_id: int) -> bool:
+    source_cell = grid.cells.get(cell_id)
+    neighbor_cell = grid.cells.get(neighbor_id)
+    if source_cell is None or neighbor_cell is None:
+        return False
+    return (
+        abs(source_cell.row - neighbor_cell.row) == 1
+        and abs(source_cell.col - neighbor_cell.col) == 1
+    )
+
+
+def _refresh_spatial_scores(state: GuidanceState, cell_ids: list[int]) -> None:
+    if state.grid is None:
+        return
+    for aid in cell_ids:
+        acs = state.cell_states.get(aid)
+        if acs is None:
+            continue
+        h, c = compute_spatial_entropy(aid, state.cell_states, state.grid)
+        acs.spatial_entropy = h
+        acs.spatial_certainty = c
+        acs.entropy_score = h
+        acs.evidence_freshness = compute_evidence_freshness(acs.evidence_score, acs.last_seen_ms)
+        acs.evidence_freshness_score = acs.evidence_freshness
+        acs.display_score = acs.evidence_freshness
+
+
 def ingest_pose(state: GuidanceState, packet: dict) -> None:
     if state.grid is None:
         return
@@ -35,56 +97,153 @@ def ingest_pose(state: GuidanceState, packet: dict) -> None:
     lon = packet.get("lon")
     if lat is None or lon is None:
         return
+    now = _now_ms()
+    previous_pose_ms = state.drone.last_pose_ms
     state.drone.lat = float(lat)
     state.drone.lon = float(lon)
     state.drone.gps_valid = bool(packet.get("gps_valid", False))
-    state.drone.sniffer_alive = bool(packet.get("sniffer_alive", False))
-    state.drone.last_pose_ms = _now_ms()
+    if "sniffer_alive" in packet:
+        state.drone.sniffer_alive = bool(packet["sniffer_alive"])
+    state.drone.last_pose_ms = now
     state.drone.heading_deg = packet.get("heading_deg")
     state.drone.speed_mps = packet.get("speed_mps")
 
-
-def ingest_evidence(state: GuidanceState, packet: dict) -> None:
-    if state.grid is None:
-        return
-    lat = packet.get("lat")
-    lon = packet.get("lon")
-    if lat is None or lon is None:
+    if not state.drone.gps_valid:
         return
 
-    cell_id = latlon_to_cell_id(float(lat), float(lon), state.grid)
+    cell_id = latlon_to_cell_id(state.drone.lat, state.drone.lon, state.grid)
     if cell_id is None:
         return
-
     cs = state.cell_states.get(cell_id)
     if cs is None:
         return
 
-    now = _now_ms()
-    dwell_ms = float(packet.get("dwell_ms", 0) or 0)
-    frames_total = int(packet.get("frames_total", 0) or 0)
-    frames_strong = int(packet.get("frames_strong", 0) or 0)
-    rssi_max = packet.get("rssi_max_dbm")
-    rssi_p95 = packet.get("rssi_p95_dbm")
-    rssi_mean = packet.get("rssi_mean_dbm")
+    dwell_ms = 0.0
+    if previous_pose_ms is not None:
+        dwell_ms = max(0.0, min(now - previous_pose_ms, cfg.POSE_DWELL_MAX_MS))
+    cs.coverage_score = update_coverage(cs.coverage_score, dwell_ms)
+    cs.age_score = 0.0
+    cs.uncertainty_score = compute_uncertainty(cs.coverage_score, cs.age_score)
+    cs.total_dwell_ms += dwell_ms
+    cs.last_updated_ms = now
+    cs.last_seen_ms = now
 
+    for neighbor_id in get_neighbors(cell_id, state.grid):
+        ncs = state.cell_states.get(neighbor_id)
+        if ncs is None:
+            continue
+        is_diagonal = _is_diagonal_neighbor(state.grid, cell_id, neighbor_id)
+        k_cov = cfg.NEIGHBOR_COVERAGE_ALPHA_DIAG if is_diagonal else cfg.NEIGHBOR_COVERAGE_ALPHA_ORTH
+        ncs.coverage_score = update_coverage(
+            ncs.coverage_score,
+            cfg.NEIGHBOR_COVERAGE_BETA * k_cov * dwell_ms,
+        )
+        ncs.uncertainty_score = compute_uncertainty(ncs.coverage_score, ncs.age_score)
+
+
+def ingest_evidence(state: GuidanceState, packet: dict) -> None:
+    if state.grid is None:
+        _drop_evidence(state, packet, "grid_not_initialized")
+        return
+    lat = packet.get("lat")
+    lon = packet.get("lon")
+    if lat is None or lon is None:
+        _drop_evidence(state, packet, "missing_lat_lon")
+        return
+
+    try:
+        cell_id = latlon_to_cell_id(float(lat), float(lon), state.grid)
+    except (TypeError, ValueError):
+        _drop_evidence(state, packet, "invalid_lat_lon")
+        return
+    if cell_id is None:
+        _drop_evidence(state, packet, "outside_grid")
+        return
+
+    cs = state.cell_states.get(cell_id)
+    if cs is None:
+        _drop_evidence(state, packet, "missing_cell_state", cell_id)
+        return
+
+    try:
+        dwell_ms = float(packet.get("dwell_ms", packet.get("win_ms", 0)) or 0)
+        frames_total = int(packet.get("frames_total", 0) or 0)
+        frames_strong = int(packet.get("frames_strong", 0) or 0)
+        rssi_max = packet.get("rssi_max_dbm")
+        rssi_p95 = packet.get("rssi_p95_dbm")
+        rssi_mean = packet.get("rssi_mean_dbm")
+        rssi_max_value = float(rssi_max) if rssi_max is not None else None
+        rssi_p95_value = float(rssi_p95) if rssi_p95 is not None else None
+        rssi_mean_value = float(rssi_mean) if rssi_mean is not None else None
+    except (TypeError, ValueError):
+        _drop_evidence(state, packet, "invalid_evidence_values", cell_id)
+        return
+
+    now = _now_ms()
     cs.total_frames += frames_total
     cs.total_strong_frames += frames_strong
     cs.total_dwell_ms += dwell_ms
-    if rssi_max is not None:
-        cs.rssi_max = max(cs.rssi_max or -999, float(rssi_max))
-    if rssi_p95 is not None:
-        cs.rssi_p95 = float(rssi_p95)
-    if rssi_mean is not None:
-        cs.rssi_mean = float(rssi_mean)
+    if rssi_max_value is not None:
+        cs.rssi_max = max(cs.rssi_max or -999, rssi_max_value)
+    if rssi_p95_value is not None:
+        cs.rssi_p95 = rssi_p95_value
+    if rssi_mean_value is not None:
+        cs.rssi_mean = rssi_mean_value
 
     raw_e = compute_evidence_raw(cs.rssi_p95, cs.rssi_max, frames_total, frames_strong)
     cs.evidence_score = update_evidence_ema(cs.evidence_score, raw_e)
-    cs.coverage_score = update_coverage(cs.coverage_score, dwell_ms)
+    packet_v_boost = frames_total / cfg.N_COV_PACKET_REF
+    time_v_boost = dwell_ms / cfg.T_COV_MS
+    cs.coverage_score = min(1.0, cs.coverage_score + max(time_v_boost, packet_v_boost))
     cs.age_score = 0.0
     cs.uncertainty_score = compute_uncertainty(cs.coverage_score, cs.age_score)
     cs.last_updated_ms = now
     cs.last_seen_ms = now
+
+    affected_ids = [cell_id]
+    for neighbor_id in get_neighbors(cell_id, state.grid):
+        ncs = state.cell_states.get(neighbor_id)
+        if ncs is None:
+            continue
+        is_diagonal = _is_diagonal_neighbor(state.grid, cell_id, neighbor_id)
+        alpha = cfg.NEIGHBOR_EVIDENCE_ALPHA_DIAG if is_diagonal else cfg.NEIGHBOR_EVIDENCE_ALPHA_ORTH
+        ncs.evidence_score = update_evidence_ema(ncs.evidence_score, alpha * raw_e)
+        ncs.last_seen_ms = now
+        affected_ids.append(neighbor_id)
+
+    # Ring-2: spread evidence further when signal is strong.
+    if rssi_p95_value is not None and norm_rssi(rssi_p95_value) >= cfg.STRONG_RSSI_NORM_THRESHOLD:
+        ring1_set = set(get_neighbors(cell_id, state.grid))
+        ring2_set: set[int] = set()
+        for r1_id in ring1_set:
+            for r2_id in get_neighbors(r1_id, state.grid):
+                if r2_id != cell_id and r2_id not in ring1_set:
+                    ring2_set.add(r2_id)
+        for r2_id in ring2_set:
+            r2cs = state.cell_states.get(r2_id)
+            if r2cs is None:
+                continue
+            is_diag = (
+                _is_diagonal_neighbor(state.grid, cell_id, r2cs.cell_id)
+                if state.grid.cells.get(r2_id)
+                else False
+            )
+            alpha = (
+                cfg.NEIGHBOR_EVIDENCE_ALPHA_RING2_DIAG
+                if is_diag
+                else cfg.NEIGHBOR_EVIDENCE_ALPHA_RING2_ORTH
+            )
+            r2cs.evidence_score = update_evidence_ema(r2cs.evidence_score, alpha * raw_e)
+            r2cs.last_seen_ms = now
+            affected_ids.append(r2_id)
+
+    _refresh_spatial_scores(state, affected_ids)
+
+    diag = state.evidence_diagnostics
+    diag.evidence_packets_ingested += 1
+    diag.last_evidence_ms = now
+    diag.last_evidence_drop_reason = None
+    diag.last_evidence_packet = _packet_summary(packet, cell_id)
 
 
 def ingest_health(state: GuidanceState, packet: dict) -> None:
@@ -104,3 +263,13 @@ def tick_age(state: GuidanceState, delta_ms: float) -> None:
         if cs.last_updated_ms is None or (now - cs.last_updated_ms) > 2000:
             cs.age_score = update_age(cs.age_score, delta_ms)
         cs.uncertainty_score = compute_uncertainty(cs.coverage_score, cs.age_score)
+        cs.evidence_freshness = compute_evidence_freshness(cs.evidence_score, cs.last_seen_ms)
+        cs.evidence_freshness_score = cs.evidence_freshness
+        cs.display_score = cs.evidence_freshness
+        if state.grid is not None:
+            cs.spatial_entropy, cs.spatial_certainty = compute_spatial_entropy(
+                cs.cell_id,
+                state.cell_states,
+                state.grid,
+            )
+            cs.entropy_score = cs.spatial_entropy

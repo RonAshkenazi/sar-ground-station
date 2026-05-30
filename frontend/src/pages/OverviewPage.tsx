@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CircleMarker, MapContainer, TileLayer, Tooltip } from 'react-leaflet'
 import { getInventory, runOverview, type OverviewResult } from '../api/sessions'
+import HelpTip from '../components/HelpTip'
+import { HELP } from '../helpTexts'
 import { useSession } from '../state/SessionContext'
 import './OverviewPage.css'
 
@@ -179,9 +181,10 @@ export default function OverviewPage() {
             <div className="stats-grid">
               <StatCard label="Records" value={overview.record_count.toLocaleString()} />
               <StatCard label="Unique MACs" value={overview.unique_macs.toLocaleString()} />
-              <StatCard label="GPS Fix" value={`${overview.gps_fix_pct}%`} />
+              <StatCard label="GPS Fix" value={`${overview.gps_fix_pct}%`} helpText={HELP.gps_fix} />
               <StatCard
                 label="RSSI Range"
+                helpText={HELP.rssi_range}
                 value={
                   overview.rssi_min != null && overview.rssi_max != null
                     ? `${overview.rssi_min} to ${overview.rssi_max} dBm`
@@ -190,6 +193,7 @@ export default function OverviewPage() {
               />
               <StatCard
                 label="RSSI Mean"
+                helpText={HELP.rssi_range}
                 value={overview.rssi_mean != null ? `${overview.rssi_mean} dBm` : '-'}
               />
             </div>
@@ -307,7 +311,7 @@ export default function OverviewPage() {
                       checked={showHeartbeats}
                       onChange={(e) => setShowHeartbeats(e.target.checked)}
                     />
-                    Heartbeats
+                    Heartbeats <HelpTip text={HELP.heartbeats} left />
                   </label>
                   <div className="layer-toggle">
                     <button
@@ -324,14 +328,14 @@ export default function OverviewPage() {
                     </button>
                   </div>
                 </div>
-                <MapContainer center={mapCenter} zoom={15} maxZoom={20} className="overview-map">
+                <MapContainer center={mapCenter} zoom={15} maxZoom={23} className="overview-map">
                   {mapLayer === 'satellite' ? (
                     <TileLayer
                       key="satellite"
                       attribution='Tiles &copy; Esri &mdash; Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, GIS User Community'
                       url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
                       maxNativeZoom={18}
-                      maxZoom={20}
+                      maxZoom={23}
                     />
                   ) : (
                     <TileLayer
@@ -339,7 +343,7 @@ export default function OverviewPage() {
                       attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                       url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                       maxNativeZoom={19}
-                      maxZoom={20}
+                      maxZoom={23}
                     />
                   )}
                   {filteredPoints.map((point, index) => (
@@ -375,10 +379,12 @@ export default function OverviewPage() {
   )
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
+function StatCard({ label, value, helpText }: { label: string; value: string; helpText?: string }) {
   return (
     <div className="stat-card">
-      <span className="stat-label">{label}</span>
+      <span className="stat-label">
+        {label} {helpText && <HelpTip text={helpText} />}
+      </span>
       <span className="stat-value">{value}</span>
     </div>
   )

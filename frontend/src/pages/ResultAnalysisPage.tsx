@@ -15,6 +15,8 @@ import {
   type LocalizationRunResult,
   type ResultAnalysisState,
 } from '../api/sessions'
+import HelpTip from '../components/HelpTip'
+import { HELP } from '../helpTexts'
 import { useSession } from '../state/SessionContext'
 import './ResultAnalysisPage.css'
 
@@ -27,6 +29,7 @@ export default function ResultAnalysisPage() {
   const [raState, setRaState] = useState<ResultAnalysisState | null>(null)
   const [evalResult, setEvalResult] = useState<EvaluationResult | null>(null)
   const [addingGt, setAddingGt] = useState(false)
+  const [gtColors, setGtColors] = useState<Record<string, string>>({})
   const [mapLayer, setMapLayer] = useState<MapLayer>('satellite')
   const [showHeatmap, setShowHeatmap] = useState(true)
   const [showUncertaintyRadii, setShowUncertaintyRadii] = useState(true)
@@ -39,21 +42,29 @@ export default function ResultAnalysisPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const csvInputRef = useRef<HTMLInputElement | null>(null)
   const [evalParams, setEvalParams] = useState({
-    ratio_gate: 2.0,
-    max_match_dist_m: 200,
-    r_normalize_m: 20.0,
+    ratio_gate: 1.2,
+    max_match_dist_m: 30,
+    r_normalize_m: 30.0,
+    d_free_m: 10.0,
     w_containment: 0.4,
     w_distance: 0.3,
     w_count: 0.2,
     w_radius: 0.1,
   })
-  const [rerunStage, setRerunStage] = useState<'localization' | 'reid'>('localization')
+  const [rerunStage, setRerunStage] = useState<'localization' | 'reid' | 'enrichment'>('localization')
+  const [enrichmentParams, setEnrichmentParams] = useState({
+    match_threshold: 0.3,
+    time_window_ms: 1000.0,
+    time_score_weight: 1.0,
+    identity_score_weight: 1.0,
+    context_weight: 0.5,
+  })
   const [localizationParams, setLocalizationParams] = useState({
     grid_resolution_m: 2.0,
     dynamic_sigma_alpha: 0.05,
-    confidence_cutoff: 0.5,
-    uncertainty_participation_floor: 0.5,
-    uncertainty_alpha: 2.0,
+    confidence_cutoff: 0.75,
+    uncertainty_participation_floor: 0.8,
+    uncertainty_alpha: 1.5,
     buffer_m: 25.0,
   })
   const [reidParams, setReidParams] = useState({
@@ -137,7 +148,6 @@ export default function ResultAnalysisPage() {
     try {
       await addGtPoint(session.session_id, point.lat, point.lon)
       await loadState()
-      setAddingGt(false)
     } catch (err: unknown) {
       setError(String(err))
     } finally {
@@ -167,15 +177,17 @@ export default function ResultAnalysisPage() {
       const text = await file.text()
       const lines = text.split('\n').filter((line) => line.trim())
       if (lines.length < 2) throw new Error('CSV has no data rows')
-      const headers = lines[0].split(',').map((h) => h.trim().toLowerCase())
+      const headers = parseCsvRow(lines[0]).map((h) => h.trim().toLowerCase())
       const latIdx = headers.indexOf('gps_lat') !== -1 ? headers.indexOf('gps_lat') : headers.indexOf('lat')
       const lonIdx = headers.indexOf('gps_lon') !== -1 ? headers.indexOf('gps_lon') : headers.indexOf('lon')
+      const gpsFixIdx = headers.indexOf('gps_fix')
       if (latIdx === -1 || lonIdx === -1) throw new Error('CSV must have gps_lat/gps_lon or lat/lon columns')
       let sumLat = 0,
         sumLon = 0,
         count = 0
       for (const line of lines.slice(1)) {
-        const cols = line.split(',')
+        const cols = parseCsvRow(line)
+        if (gpsFixIdx !== -1 && cols[gpsFixIdx]?.trim() !== '1') continue
         const lat = parseFloat(cols[latIdx])
         const lon = parseFloat(cols[lonIdx])
         if (!isNaN(lat) && !isNaN(lon)) {
@@ -238,7 +250,8 @@ export default function ResultAnalysisPage() {
         session.session_id,
         rerunStage,
         localizationParams,
-        rerunStage === 'reid' ? reidParams : undefined,
+        rerunStage === 'reid' || rerunStage === 'enrichment' ? reidParams : undefined,
+        rerunStage === 'enrichment' ? enrichmentParams : undefined,
       )
       const executionId = started.execution_id ?? started.localization_execution_id
       if (executionId) {
@@ -282,7 +295,9 @@ export default function ResultAnalysisPage() {
       <div className="result-analysis-layout">
         <aside className="result-analysis-left">
           <section className="ra-panel">
-            <h2 className="panel-title">Ground Truth</h2>
+            <h2 className="panel-title">
+              Ground Truth <HelpTip text={HELP.ground_truth} />
+            </h2>
             <button className="btn-secondary" disabled={!session || loading} onClick={() => setAddingGt((value) => !value)}>
               {addingGt ? 'Click on map...' : 'Add from map'}
             </button>
@@ -309,6 +324,13 @@ export default function ResultAnalysisPage() {
             <div className="gt-list">
               {(raState?.gt_points ?? []).map((point, index) => (
                 <div key={point.gt_id} className="gt-row">
+                  <input
+                    type="color"
+                    className="gt-color-picker"
+                    value={gtColors[point.gt_id] ?? '#ef4444'}
+                    onChange={(event) => setGtColors((prev) => ({ ...prev, [point.gt_id]: event.target.value }))}
+                    title="GT marker color"
+                  />
                   <span>
                     {point.label || `GT #${index + 1}`} {point.lat.toFixed(5)}, {point.lon.toFixed(5)}
                   </span>
@@ -323,28 +345,64 @@ export default function ResultAnalysisPage() {
           <section className="ra-panel">
             <h2 className="panel-title">Evaluation</h2>
             <div className="eval-param-row">
-              <label>Ratio gate</label>
+              <label>
+                Ratio gate <HelpTip text={HELP.ratio_gate} />
+              </label>
               <input
                 type="number"
                 step="0.1"
                 min="1.0"
-                value={evalParams.ratio_gate ?? 2.0}
+                value={evalParams.ratio_gate ?? 1.2}
                 onChange={(event) => setEvalParams((previous) => ({ ...previous, ratio_gate: Number(event.target.value) }))}
               />
             </div>
+            <p className="eval-param-hint">
+              Lower = more permissive. 1.0 = always match nearest. 2.0 = strict (nearest must be 2x closer than second-nearest).
+            </p>
             <div className="eval-param-row">
-              <label>Max match dist (m)</label>
+              <label>
+                Max match dist (m) <HelpTip text={HELP.max_match_dist_m} />
+              </label>
               <input
                 type="number"
                 step="10"
                 min="0"
-                value={evalParams.max_match_dist_m ?? 200}
+                value={evalParams.max_match_dist_m ?? 30}
                 onChange={(event) => setEvalParams((previous) => ({ ...previous, max_match_dist_m: Number(event.target.value) }))}
               />
             </div>
-            {(['r_normalize_m', 'w_containment', 'w_distance', 'w_count', 'w_radius'] as const).map((key) => (
+            <div className="eval-param-row">
+              <label>
+                Free zone (m) <HelpTip text={HELP.d_free_m} />
+              </label>
+              <input
+                type="number"
+                step="1"
+                min="0"
+                value={evalParams.d_free_m}
+                onChange={(event) => setEvalParams((previous) => ({ ...previous, d_free_m: Number(event.target.value) }))}
+              />
+            </div>
+            <div className="eval-param-row">
+              <label>
+                Penalty scale (m) <HelpTip text={HELP.r_normalize_m} />
+              </label>
+              <input
+                type="number"
+                step="1"
+                min="1"
+                value={evalParams.r_normalize_m}
+                onChange={(event) => setEvalParams((previous) => ({ ...previous, r_normalize_m: Number(event.target.value) }))}
+              />
+            </div>
+            <p className="eval-param-hint">
+              Distance/Radius: ≤ free zone → 100%. Beyond: score = 1 − ((d − free zone) / penalty scale)².
+            </p>
+            {(['w_containment', 'w_distance', 'w_count', 'w_radius'] as const).map((key) => (
               <label key={key} className="eval-param-row">
-                <span>{key}</span>
+                <span>
+                  {key} <HelpTip text={HELP[key]} />
+                </span>
                 <input
                   type="number"
                   step="0.1"
@@ -360,7 +418,9 @@ export default function ResultAnalysisPage() {
 
           <section className="ra-panel">
             <div className="cluster-summary-header">
-              <h2 className="panel-title">Clusters</h2>
+              <h2 className="panel-title">
+                Clusters <HelpTip text={HELP.cluster_confidence} />
+              </h2>
               <div className="cluster-bulk-actions">
                 <button className="btn-text" onClick={() => setHiddenClusters(new Set())}>
                   Show all
@@ -415,11 +475,23 @@ export default function ResultAnalysisPage() {
                 <input type="radio" checked={rerunStage === 'reid'} onChange={() => setRerunStage('reid')} />
                 Re-ID + Loc
               </label>
+              <label>
+                <input
+                  type="radio"
+                  checked={rerunStage === 'enrichment'}
+                  onChange={() => setRerunStage('enrichment')}
+                />
+                Enrichment + Re-ID + Loc
+              </label>
             </div>
-            <h3 className="param-heading">Localization params</h3>
+            <h3 className="param-heading">
+              Localization params <HelpTip text={HELP.loc_grid_resolution_m} />
+            </h3>
             {Object.entries(localizationParams).map(([key, value]) => (
               <label key={key} className="param-row">
-                <span>{key}</span>
+                <span>
+                  {key} <HelpTip text={localizationHelpText(key)} left />
+                </span>
                 <input
                   type="number"
                   step="0.01"
@@ -430,14 +502,34 @@ export default function ResultAnalysisPage() {
                 />
               </label>
             ))}
-            {rerunStage === 'reid' && (
+            {rerunStage === 'enrichment' && (
+              <>
+                <h3 className="param-heading">Enrichment params</h3>
+                {Object.entries(enrichmentParams).map(([key, value]) => (
+                  <label key={key} className="param-row">
+                    <span className="mono">{key}</span>
+                    <input
+                      type="number"
+                      step="any"
+                      value={value}
+                      onChange={(event) =>
+                        setEnrichmentParams((previous) => ({ ...previous, [key]: parseFloat(event.target.value) }))
+                      }
+                    />
+                  </label>
+                ))}
+              </>
+            )}
+            {(rerunStage === 'reid' || rerunStage === 'enrichment') && (
               <>
                 <h3 className="param-heading">Re-ID params</h3>
                 {Object.entries(reidParams)
                   .filter(([key]) => key !== 'probe_requests_only')
                   .map(([key, value]) => (
                     <label key={key} className="param-row">
-                      <span>{key}</span>
+                      <span>
+                        {key} <HelpTip text={reidHelpText(key)} left />
+                      </span>
                       <input
                         type="number"
                         step="0.01"
@@ -447,7 +539,9 @@ export default function ResultAnalysisPage() {
                     </label>
                   ))}
                 <label className="param-row">
-                  <span>probe_requests_only</span>
+                  <span>
+                    probe_requests_only <HelpTip text={HELP.reid_probe_requests_only} left />
+                  </span>
                   <input
                     type="checkbox"
                     checked={reidParams.probe_requests_only}
@@ -467,7 +561,7 @@ export default function ResultAnalysisPage() {
           <div className="map-controls">
             <label className="map-control-check">
               <input type="checkbox" checked={showHeatmap} onChange={(event) => setShowHeatmap(event.target.checked)} />
-              Heatmap
+              Heatmap <HelpTip text={HELP.heatmap} left />
             </label>
             <label className="map-control-check">
               <input
@@ -475,16 +569,18 @@ export default function ResultAnalysisPage() {
                 checked={showUncertaintyRadii}
                 onChange={(event) => setShowUncertaintyRadii(event.target.checked)}
               />
-              Radii
+              Radii <HelpTip text={HELP.radii} left />
             </label>
             <label className="map-control-check">
               <input type="checkbox" checked={showPeaks} onChange={(event) => setShowPeaks(event.target.checked)} />
-              Peaks
+              Peaks <HelpTip text={HELP.peaks} left />
             </label>
             <div className="map-controls-divider" />
             <div className="map-legend">
               <span className="legend-ambiguous-gt" aria-hidden="true" />
-              <span>Ambiguous GT</span>
+              <span>
+                Ambiguous GT <HelpTip text={HELP.ambiguous_gt} left />
+              </span>
             </div>
             <div className="map-controls-divider" />
             <div className="layer-toggle">
@@ -496,21 +592,21 @@ export default function ResultAnalysisPage() {
               </button>
             </div>
           </div>
-          <MapContainer center={mapCenter} zoom={15} maxZoom={20} className={`result-analysis-map${addingGt ? ' gt-adding-mode' : ''}`}>
+          <MapContainer center={mapCenter} zoom={15} maxZoom={23} className={`result-analysis-map${addingGt ? ' gt-adding-mode' : ''}`}>
             {localization && <SetView center={mapCenter} zoom={16} />}
             {mapLayer === 'satellite' ? (
               <TileLayer
                 attribution="Tiles &copy; Esri"
                 url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
                 maxNativeZoom={18}
-                maxZoom={20}
+                maxZoom={23}
               />
             ) : (
               <TileLayer
                 attribution="&copy; OpenStreetMap"
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 maxNativeZoom={19}
-                maxZoom={20}
+                maxZoom={23}
               />
             )}
             <GtClickHandler enabled={addingGt} onAdd={handleAddGt} />
@@ -550,23 +646,27 @@ export default function ResultAnalysisPage() {
                   <Tooltip>FP: cluster {fp.cluster_id}</Tooltip>
                 </Marker>
               ))}
-            {(raState?.gt_points ?? []).map((point) => (
-              <CircleMarker
-                key={point.gt_id}
-                center={[point.lat, point.lon]}
-                radius={8}
-                pathOptions={
-                  falseNegativeIds.has(point.gt_id)
-                    ? { color: '#dc2626', fillOpacity: 0, weight: 3 }
-                    : { color: '#b91c1c', fillColor: '#ef4444', fillOpacity: 0.9, weight: 2 }
-                }
-              >
-                <Tooltip>
-                  {falseNegativeIds.has(point.gt_id) ? 'FN: ' : ''}
-                  {point.label || point.gt_id.slice(0, 8)}
-                </Tooltip>
-              </CircleMarker>
-            ))}
+            {(raState?.gt_points ?? []).map((point) => {
+              const gtColor = gtColors[point.gt_id] ?? '#ef4444'
+              const isFn = falseNegativeIds.has(point.gt_id)
+              return (
+                <CircleMarker
+                  key={point.gt_id}
+                  center={[point.lat, point.lon]}
+                  radius={8}
+                  pathOptions={
+                    isFn
+                      ? { color: 'white', fillColor: gtColor, fillOpacity: 0.15, weight: 2.5, dashArray: '5 4' }
+                      : { color: 'white', fillColor: gtColor, fillOpacity: 0.92, weight: 2.5 }
+                  }
+                >
+                  <Tooltip>
+                    {isFn ? 'FN: ' : ''}
+                    {point.label || point.gt_id.slice(0, 8)}
+                  </Tooltip>
+                </CircleMarker>
+              )
+            })}
             {evalResult?.ambiguous_gts?.map((ag) => (
               <CircleMarker
                 key={`ambig-${ag.gt_id}`}
@@ -611,20 +711,25 @@ export default function ResultAnalysisPage() {
               <div className="score-total">{(evalResult.score.total * 100).toFixed(1)}%</div>
             </div>
             <div className="score-grid">
-              <ScoreItem label="Containment" value={evalResult.score.containment} />
-              <ScoreItem label="Distance" value={evalResult.score.distance} />
-              <ScoreItem label="Count" value={evalResult.score.count} />
-              <ScoreItem label="Radius" value={evalResult.score.radius} />
+              <ScoreItem label="Containment" value={evalResult.score.containment} helpText={HELP.score_containment} />
+              <ScoreItem label="Distance" value={evalResult.score.distance} helpText={HELP.score_distance} />
+              <ScoreItem label="Count" value={evalResult.score.count} helpText={HELP.score_count} />
+              <ScoreItem label="Radius" value={evalResult.score.radius} helpText={HELP.score_radius} />
             </div>
             <p className="reliability-note">{evalResult.radius_reliability_note}</p>
             <div className="metric-row">
-              <span>Ambiguous GTs</span>
+              <span>
+                Ambiguous GTs <HelpTip text={HELP.ambiguous_gt} />
+              </span>
               <span>{evalResult?.ambiguous_gts?.length ?? 0}</span>
             </div>
             <div className="metrics-row">
-              Recall {pct(evalResult.metrics.recall)} | Precision {pct(evalResult.metrics.precision)} | Coverage{' '}
-              {pct(evalResult.metrics.coverage)} | Median error {fmt(evalResult.metrics.median_error_m)}m | P90{' '}
-              {fmt(evalResult.metrics.p90_error_m)}m | Count error {evalResult.metrics.count_error}
+              Recall <HelpTip text={HELP.recall} /> {pct(evalResult.metrics.recall)} | Precision{' '}
+              <HelpTip text={HELP.precision} /> {pct(evalResult.metrics.precision)} | Coverage{' '}
+              <HelpTip text={HELP.coverage} /> {pct(evalResult.metrics.coverage)} | Median error{' '}
+              <HelpTip text={HELP.median_error} /> {fmt(evalResult.metrics.median_error_m)}m | P90{' '}
+              <HelpTip text={HELP.p90_error} /> {fmt(evalResult.metrics.p90_error_m)}m | Count error{' '}
+              <HelpTip text={HELP.count_error} /> {evalResult.metrics.count_error}
             </div>
           </section>
 
@@ -707,10 +812,12 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
-function ScoreItem({ label, value }: { label: string; value: number }) {
+function ScoreItem({ label, value, helpText }: { label: string; value: number; helpText: string }) {
   return (
     <div className="score-item">
-      <span>{label}</span>
+      <span>
+        {label} <HelpTip text={helpText} />
+      </span>
       <strong>{pct(value)}</strong>
     </div>
   )
@@ -722,15 +829,29 @@ function Diagnostics({ result, possibleMergeIds }: { result: EvaluationResult; p
       <table className="diagnostics-table">
         <thead>
           <tr>
-            <th>GT</th>
+            <th>
+              GT <HelpTip text={HELP.ground_truth} />
+            </th>
             <th>Cluster</th>
             <th>Type</th>
-            <th>Dist (m)</th>
-            <th>Radius (m)</th>
-            <th>Covered</th>
-            <th>Association</th>
-            <th>Duplicates</th>
-            <th>Merge</th>
+            <th>
+              Dist (m) <HelpTip text={HELP.median_error} />
+            </th>
+            <th>
+              Radius (m) <HelpTip text={HELP.uncertainty_radius} />
+            </th>
+            <th>
+              Covered <HelpTip text={HELP.score_containment} />
+            </th>
+            <th>
+              Association <HelpTip text={HELP.association_clear} />
+            </th>
+            <th>
+              Duplicates <HelpTip text={HELP.duplicates} />
+            </th>
+            <th>
+              Merge <HelpTip text={HELP.possible_merge} />
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -754,21 +875,45 @@ function Diagnostics({ result, possibleMergeIds }: { result: EvaluationResult; p
         </tbody>
       </table>
       <div className="diagnostic-lists">
-        <DiagnosticList title="False Positives" items={result.false_positives.map((item) => item.cluster_id)} />
-        <DiagnosticList title="False Negatives" items={result.false_negatives.map((item) => item.label || item.gt_id)} />
-        <DiagnosticList title="Duplicates" items={result.duplicates.map((item) => item.cluster_id)} />
+        <DiagnosticList title="False Positives" helpText={HELP.false_positives} items={result.false_positives.map((item) => item.cluster_id)} />
+        <DiagnosticList title="False Negatives" helpText={HELP.false_negatives} items={result.false_negatives.map((item) => item.label || item.gt_id)} />
+        <DiagnosticList title="Duplicates" helpText={HELP.duplicates} items={result.duplicates.map((item) => item.cluster_id)} />
       </div>
     </section>
   )
 }
 
-function DiagnosticList({ title, items }: { title: string; items: string[] }) {
+function DiagnosticList({ title, helpText, items }: { title: string; helpText: string; items: string[] }) {
   return (
     <div className="diagnostic-list">
-      <h3>{title}</h3>
+      <h3>
+        {title} <HelpTip text={helpText} />
+      </h3>
       {items.length ? items.map((item) => <span key={item}>{item}</span>) : <span>None</span>}
     </div>
   )
+}
+
+function localizationHelpText(key: string): string {
+  const helpByKey: Record<string, string> = {
+    grid_resolution_m: HELP.loc_grid_resolution_m,
+    dynamic_sigma_alpha: HELP.loc_dynamic_sigma_alpha,
+    confidence_cutoff: HELP.loc_confidence_cutoff,
+    uncertainty_participation_floor: HELP.loc_uncertainty_participation_floor,
+    uncertainty_alpha: HELP.loc_uncertainty_alpha,
+    buffer_m: HELP.loc_buffer_m,
+  }
+  return helpByKey[key] ?? HELP.loc_grid_resolution_m
+}
+
+function reidHelpText(key: string): string {
+  const helpByKey: Record<string, string> = {
+    association_threshold: HELP.reid_association_threshold,
+    seq_gap_max: HELP.reid_seq_gap_max,
+    time_gap_max_sec: HELP.reid_time_gap_max_sec,
+    burst_window_sec: HELP.reid_burst_window_sec,
+  }
+  return helpByKey[key] ?? HELP.reid_association_threshold
 }
 
 function pct(value: number): string {
@@ -777,6 +922,36 @@ function pct(value: number): string {
 
 function fmt(value: number | null): string {
   return value === null ? '-' : value.toFixed(1)
+}
+
+function parseCsvRow(line: string): string[] {
+  const fields: string[] = []
+  let current = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (inQuotes) {
+      if (ch === '"' && line[i + 1] === '"') {
+        current += '"'
+        i++
+      } else if (ch === '"') {
+        inQuotes = false
+      } else {
+        current += ch
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true
+      } else if (ch === ',') {
+        fields.push(current)
+        current = ''
+      } else {
+        current += ch
+      }
+    }
+  }
+  fields.push(current)
+  return fields
 }
 
 function heatColor(value: number): string {

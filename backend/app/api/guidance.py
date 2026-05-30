@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.modules.guidance.engine import get_engine
 
@@ -18,10 +18,9 @@ class InitRequest(BaseModel):
 
 
 class UpdateRequest(BaseModel):
-    type: str
+    model_config = ConfigDict(extra="allow")
 
-    class Config:
-        extra = "allow"
+    type: str | None = None
 
 
 @router.post("/init")
@@ -42,6 +41,11 @@ def reset_guidance() -> dict:
     return {"ok": True}
 
 
+@router.get("/status")
+def guidance_status() -> dict:
+    return get_engine().get_status()
+
+
 @router.get("/recommendation")
 def get_recommendation() -> dict:
     rec = get_engine().get_recommendation()
@@ -58,7 +62,36 @@ def get_grid() -> dict:
     return {"initialized": True, **grid}
 
 
+@router.get("/debug")
+def get_debug() -> dict:
+    return get_engine().get_debug_state()
+
+
 @router.post("/update")
 def update_guidance(body: UpdateRequest) -> dict:
     get_engine().ingest(body.model_dump())
+    return {"ok": True}
+
+
+@router.post("/pose")
+def update_pose(body: UpdateRequest) -> dict:
+    packet = body.model_dump()
+    packet["type"] = "POSE"
+    get_engine().ingest(packet)
+    return {"ok": True}
+
+
+@router.post("/evidence")
+def update_evidence(body: UpdateRequest) -> dict:
+    packet = body.model_dump()
+    packet["type"] = "EVIDENCE"
+    get_engine().ingest(packet)
+    return {"ok": True}
+
+
+@router.post("/health")
+def update_health(body: UpdateRequest) -> dict:
+    packet = body.model_dump()
+    packet["type"] = "HEALTH"
+    get_engine().ingest(packet)
     return {"ok": True}

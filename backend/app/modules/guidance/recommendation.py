@@ -4,7 +4,7 @@ import time
 from typing import Optional
 
 from . import config as cfg
-from .grid import bearing_deg, haversine_m
+from .grid import bearing_deg, haversine_m, latlon_to_cell_id
 from .models import GuidanceRecommendation, GuidanceState, GridCellState
 from .scoring import (
     compute_final_score,
@@ -32,6 +32,51 @@ def _reason(mode: str, cs: GridCellState) -> str:
     if cs.coverage_score < 0.3:
         return "Unvisited area"
     return "Best unexplored region"
+
+
+def _gps_cell_id(state: GuidanceState) -> Optional[int]:
+    if not state.drone.gps_valid or state.grid is None:
+        return None
+    return latlon_to_cell_id(state.drone.lat, state.drone.lon, state.grid)
+
+
+def _make_recommendation(
+    state: GuidanceState,
+    cell_id: int,
+    now_ms: float,
+    reason: str,
+) -> GuidanceRecommendation:
+    best = state.cell_states[cell_id]
+    previous_recommendation_ms = state.last_recommendation_ms
+    state.previous_target_id = cell_id
+    state.last_recommendation_ms = now_ms
+
+    dist = haversine_m(state.drone.lat, state.drone.lon, best.center_lat, best.center_lon)
+    bear = bearing_deg(state.drone.lat, state.drone.lon, best.center_lat, best.center_lon)
+    stale = (
+        previous_recommendation_ms is not None
+        and (now_ms - previous_recommendation_ms) > cfg.RECOMMENDATION_INTERVAL_SEC * 1000 * 3
+    )
+
+    return GuidanceRecommendation(
+        timestamp_ms=now_ms,
+        mode=state.mode,
+        target_cell_id=cell_id,
+        target_lat=best.center_lat,
+        target_lon=best.center_lon,
+        bearing_deg=bear,
+        distance_m=dist,
+        final_score=best.final_score,
+        evidence_score=best.evidence_score,
+        uncertainty_score=best.uncertainty_score,
+        peak_score=best.peak_score,
+        travel_cost=best.travel_cost,
+        oscillation_penalty=best.oscillation_penalty,
+        gps_valid=state.drone.gps_valid,
+        data_fresh=_is_data_fresh(state),
+        recommendation_stale=stale,
+        reason=reason,
+    )
 
 
 def _check_mode_switch(state: GuidanceState, now_ms: float) -> None:
@@ -67,6 +112,12 @@ def compute_recommendation(state: GuidanceState) -> Optional[GuidanceRecommendat
         return None
 
     now = _now_ms()
+    current_cell_id = _gps_cell_id(state)
+    if current_cell_id is None or not state.drone.sniffer_alive:
+        return None
+
+    evidence_cell_ids: list[int] = []
+
     for cell_id, cs in state.cell_states.items():
         cs.peak_score = compute_peakness(cell_id, state.cell_states, state.grid)
 
@@ -87,36 +138,36 @@ def compute_recommendation(state: GuidanceState) -> Optional[GuidanceRecommendat
             cs.oscillation_penalty,
             state.mode,
         )
+        if cs.evidence_score >= cfg.E_TARGET_MIN:
+            evidence_cell_ids.append(cell_id)
 
-    best_id = max(state.cell_states, key=lambda cid: state.cell_states[cid].final_score)
-    best = state.cell_states[best_id]
-    previous_recommendation_ms = state.last_recommendation_ms
-    state.previous_target_id = best_id
-    state.last_recommendation_ms = now
+    if state.mode == "EXPLORE":
+        # In EXPLORE mode use all cells — evidence filter would trap the drone at the
+        # first visited cell because every other cell has e≈0 and never qualifies.
+        # U dominates the EXPLORE score (W=0.55), so unvisited cells naturally win.
+        # Once the drone passes near the RF target its E spikes and that cell wins
+        # even before mode switches to REFINE.
+        best_id = max(
+            state.cell_states.keys(),
+            key=lambda cid: state.cell_states[cid].final_score,
+        )
+        return _make_recommendation(state, best_id, now, _reason(state.mode, state.cell_states[best_id]))
 
-    dist = haversine_m(state.drone.lat, state.drone.lon, best.center_lat, best.center_lon)
-    bear = bearing_deg(state.drone.lat, state.drone.lon, best.center_lat, best.center_lon)
-    stale = (
-        previous_recommendation_ms is not None
-        and (now - previous_recommendation_ms) > cfg.RECOMMENDATION_INTERVAL_SEC * 1000 * 3
-    )
+    # REFINE mode — lock onto the RF peak using the evidence filter.
+    if evidence_cell_ids:
+        max_evidence = max(state.cell_states[cid].evidence_score for cid in evidence_cell_ids)
+        evidence_cell_ids = [
+            cid
+            for cid in evidence_cell_ids
+            if state.cell_states[cid].evidence_score >= max(cfg.E_TARGET_MIN, max_evidence * 0.5)
+        ]
 
-    return GuidanceRecommendation(
-        timestamp_ms=now,
-        mode=state.mode,
-        target_cell_id=best_id,
-        target_lat=best.center_lat,
-        target_lon=best.center_lon,
-        bearing_deg=bear,
-        distance_m=dist,
-        final_score=best.final_score,
-        evidence_score=best.evidence_score,
-        uncertainty_score=best.uncertainty_score,
-        peak_score=best.peak_score,
-        travel_cost=best.travel_cost,
-        oscillation_penalty=best.oscillation_penalty,
-        gps_valid=state.drone.gps_valid,
-        data_fresh=_is_data_fresh(state),
-        recommendation_stale=stale,
-        reason=_reason(state.mode, best),
-    )
+    if not evidence_cell_ids:
+        best_id = max(
+            state.cell_states.keys(),
+            key=lambda cid: state.cell_states[cid].uncertainty_score,
+        )
+        return _make_recommendation(state, best_id, now, "Exploring — no RF evidence yet")
+
+    best_id = max(evidence_cell_ids, key=lambda cid: state.cell_states[cid].final_score)
+    return _make_recommendation(state, best_id, now, _reason(state.mode, state.cell_states[best_id]))

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CircleMarker,
   MapContainer,
@@ -39,6 +39,23 @@ type WsMessage = {
 }
 
 const DEFAULT_CENTER: [number, number] = [31.5, 34.8]
+const COLOR_PRESETS = [
+  { name: 'Amber', value: '#fbbf24' },
+  { name: 'Blue', value: '#3b82f6' },
+  { name: 'Green', value: '#22c55e' },
+  { name: 'Cyan', value: '#06b6d4' },
+  { name: 'Violet', value: '#8b5cf6' },
+  { name: 'Rose', value: '#f43f5e' },
+  { name: 'White', value: '#f8fafc' },
+  { name: 'Orange', value: '#f97316' },
+  { name: 'Lime', value: '#84cc16' },
+  { name: 'Sky', value: '#0ea5e9' },
+  { name: 'Pink', value: '#ec4899' },
+  { name: 'Slate', value: '#64748b' },
+  { name: 'Teal', value: '#14b8a6' },
+  { name: 'Red', value: '#ef4444' },
+  { name: 'Yellow', value: '#eab308' },
+] as const
 
 export default function AirUnitPage() {
   const [piConnected, setPiConnected] = useState(false)
@@ -55,8 +72,18 @@ export default function AirUnitPage() {
   const [cellSizeM, setCellSizeM] = useState(30)
   const [guidanceRunning, setGuidanceRunning] = useState(false)
   const [mapCenter, setMapCenter] = useState<[number, number]>(DEFAULT_CENTER)
+  const [mapZoom, setMapZoom] = useState(15)
+  const [gsPos, setGsPos] = useState<Point | null>(null)
+  const [gsLocationEnabled, setGsLocationEnabled] = useState(false)
+  const [showGsMarker, setShowGsMarker] = useState(true)
+  const [showPiMarker, setShowPiMarker] = useState(true)
+  const [gsColor, setGsColor] = useState('#fbbf24')
+  const [piColor, setPiColor] = useState('#3b82f6')
+  const [openColorMenu, setOpenColorMenu] = useState<'gs' | 'pi' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const logRef = useRef<HTMLPreElement | null>(null)
+  const gsMenuRef = useRef<HTMLDivElement | null>(null)
+  const piMenuRef = useRef<HTMLDivElement | null>(null)
 
   const appendLog = useCallback((line: string) => {
     setLogs((previous) => [...previous, line].slice(-200))
@@ -70,6 +97,17 @@ export default function AirUnitPage() {
       })
       .catch((err: unknown) => appendLog(`[status] ${String(err)}`))
   }, [appendLog])
+
+  useEffect(() => {
+    getGuidanceGrid()
+      .then((grid) => {
+        if (grid.initialized) {
+          setGridState(grid)
+          setGuidanceRunning(true)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     let ws: WebSocket | null = null
@@ -147,11 +185,29 @@ export default function AirUnitPage() {
   }, [appendLog])
 
   useEffect(() => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => setMapCenter([pos.coords.latitude, pos.coords.longitude]),
-        () => undefined,
-      )
+    if (!navigator.geolocation) {
+      setGsLocationEnabled(false)
+      return
+    }
+
+    setGsLocationEnabled(true)
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const next = { lat: pos.coords.latitude, lon: pos.coords.longitude }
+        setGsPos(next)
+      },
+      () => {
+        setGsLocationEnabled(false)
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 5000,
+        timeout: 10000,
+      },
+    )
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId)
     }
   }, [])
 
@@ -201,6 +257,17 @@ export default function AirUnitPage() {
     }
   }, [logs])
 
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      const target = event.target as Node
+      const withinGs = gsMenuRef.current?.contains(target)
+      const withinPi = piMenuRef.current?.contains(target)
+      if (!withinGs && !withinPi) setOpenColorMenu(null)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
   const drawBounds = useMemo(() => {
     if (!drawCorner1 || !drawCorner2) return null
     return {
@@ -212,6 +279,12 @@ export default function AirUnitPage() {
   }, [drawCorner1, drawCorner2])
 
   const gridCells = useMemo(() => buildGridCells(gridState), [gridState])
+  const piMarker = dronePos
+
+  function gotoPoint(point: Point) {
+    setMapCenter([point.lat, point.lon])
+    setMapZoom(18)
+  }
 
   function handleMapPick(point: Point) {
     if (!drawMode) return
@@ -287,6 +360,61 @@ export default function AirUnitPage() {
         <span className="airunit-connection-detail">
           {piConnected && piInfo ? `Pi: ${piInfo.ip}:${piInfo.port}` : 'waiting for Pi...'}
         </span>
+        <span className={gsPos ? 'gs-dot-connected' : 'gs-dot-disconnected'}>●</span>
+        <strong>{gsPos ? 'GS live' : gsLocationEnabled ? 'Tracking GS...' : 'GS location off'}</strong>
+        <span className="airunit-connection-detail">
+          {gsPos ? `GS: ${gsPos.lat.toFixed(5)}, ${gsPos.lon.toFixed(5)}` : 'browser location'}
+        </span>
+        <div className="airunit-marker-controls">
+          <label className="airunit-toggle">
+            <input
+              type="checkbox"
+              checked={showGsMarker}
+              onChange={(event) => setShowGsMarker(event.target.checked)}
+            />
+            GS
+          </label>
+          <ColorMenu
+            ref={gsMenuRef}
+            value={gsColor}
+            onChange={setGsColor}
+            label="GS marker color"
+            open={openColorMenu === 'gs'}
+            onToggle={() => setOpenColorMenu((current) => (current === 'gs' ? null : 'gs'))}
+            buttonLabel="GS"
+          />
+          <label className="airunit-toggle">
+            <input
+              type="checkbox"
+              checked={showPiMarker}
+              onChange={(event) => setShowPiMarker(event.target.checked)}
+            />
+            Pi
+          </label>
+          <ColorMenu
+            ref={piMenuRef}
+            value={piColor}
+            onChange={setPiColor}
+            label="Pi marker color"
+            open={openColorMenu === 'pi'}
+            onToggle={() => setOpenColorMenu((current) => (current === 'pi' ? null : 'pi'))}
+            buttonLabel="Pi"
+          />
+          <button
+            type="button"
+            disabled={!showGsMarker || !gsPos}
+            onClick={() => gsPos && gotoPoint(gsPos)}
+          >
+            Go to GS
+          </button>
+          <button
+            type="button"
+            disabled={!showPiMarker || !piMarker}
+            onClick={() => piMarker && gotoPoint(piMarker)}
+          >
+            Go to Pi
+          </button>
+        </div>
         {piConnected && (
           <div className="airunit-command-row">
             <button type="button" onClick={() => handleCommand('scan_start')}>
@@ -369,13 +497,13 @@ export default function AirUnitPage() {
         </aside>
 
         <main className="airunit-main">
-          <MapContainer center={mapCenter} zoom={15} maxZoom={20} className="airunit-map">
-            <SetMapCenter center={mapCenter} />
+          <MapContainer center={mapCenter} zoom={mapZoom} maxZoom={23} className="airunit-map">
+            <SetMapCenter center={mapCenter} zoom={mapZoom} />
             <TileLayer
               attribution='Tiles &copy; Esri &mdash; Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, GIS User Community'
               url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
               maxNativeZoom={18}
-              maxZoom={20}
+              maxZoom={23}
             />
             <MapClickHandler onPick={handleMapPick} />
             {drawBounds && (
@@ -391,13 +519,14 @@ export default function AirUnitPage() {
             )}
             {gridCells.map(({ cell, bounds }) => {
               const isTarget = cell.cell_id === recommendation?.target_cell_id
+              const score = cell.display_score ?? cell.final_score
               return (
                 <Rectangle
                   key={cell.cell_id}
                   bounds={bounds}
                   pathOptions={{
-                    color: isTarget ? '#f8fafc' : scoreColor(cell.final_score),
-                    fillColor: scoreColor(cell.final_score),
+                    color: isTarget ? '#f8fafc' : scoreColor(score),
+                    fillColor: scoreColor(score),
                     fillOpacity: isTarget ? 0.5 : 0.35,
                     opacity: isTarget ? 0.9 : 0.75,
                     weight: isTarget ? 2.5 : 0.5,
@@ -406,20 +535,29 @@ export default function AirUnitPage() {
                   <Tooltip>
                     Cell {cell.cell_id}
                     <br />
-                    Score {cell.final_score.toFixed(2)}
+                    Score {score.toFixed(2)}
                     <br />
                     E {cell.evidence_score.toFixed(2)} U {cell.uncertainty_score.toFixed(2)}
                   </Tooltip>
                 </Rectangle>
               )
             })}
-            {dronePos && (
+            {showGsMarker && gsPos && (
               <CircleMarker
-                center={[dronePos.lat, dronePos.lon]}
-                radius={8}
-                pathOptions={{ color: '#f8fafc', fillColor: '#3b82f6', fillOpacity: 0.95, weight: 2 }}
+                center={[gsPos.lat, gsPos.lon]}
+                radius={9}
+                pathOptions={{ color: gsColor, fillColor: gsColor, fillOpacity: 0.95, weight: 2 }}
               >
-                <Tooltip>Drone</Tooltip>
+                <Tooltip>GS live location</Tooltip>
+              </CircleMarker>
+            )}
+            {showPiMarker && piMarker && (
+              <CircleMarker
+                center={[piMarker.lat, piMarker.lon]}
+                radius={8}
+                pathOptions={{ color: piColor, fillColor: piColor, fillOpacity: 0.95, weight: 2 }}
+              >
+                <Tooltip>Pi GPS fix</Tooltip>
               </CircleMarker>
             )}
             {recommendation && (
@@ -431,10 +569,10 @@ export default function AirUnitPage() {
                 <Tooltip>Target cell {recommendation.target_cell_id}</Tooltip>
               </CircleMarker>
             )}
-            {dronePos && recommendation && (
+            {piMarker && recommendation && (
               <Polyline
                 positions={[
-                  [dronePos.lat, dronePos.lon],
+                  [piMarker.lat, piMarker.lon],
                   [recommendation.target_lat, recommendation.target_lon],
                 ]}
                 pathOptions={{ color: '#facc15', weight: 3, dashArray: '8 4' }}
@@ -463,6 +601,8 @@ export default function AirUnitPage() {
                 <GuidanceStat label="Score" value={recommendation.final_score.toFixed(2)} />
                 <div className="guidance-reason">{recommendation.reason}</div>
               </>
+            ) : guidanceRunning ? (
+              <div className="guidance-empty">No valid target yet. Waiting for live Pi GPS and packet evidence.</div>
             ) : (
               <div className="guidance-empty">
                 {drawMode
@@ -509,13 +649,60 @@ function normalizePiInfo(msg: WsMessage): { ip: string; port: number } | null {
   return null
 }
 
-function SetMapCenter({ center }: { center: [number, number] }) {
+function SetMapCenter({ center, zoom }: { center: [number, number]; zoom: number }) {
   const map = useMap()
   useEffect(() => {
-    map.setView(center, map.getZoom())
-  }, [center, map])
+    map.setView(center, zoom)
+  }, [center, map, zoom])
   return null
 }
+
+const ColorMenu = forwardRef<
+  HTMLDivElement,
+  {
+    value: string
+    onChange: (value: string) => void
+    label: string
+    open: boolean
+    onToggle: () => void
+    buttonLabel: string
+  }
+>(function ColorMenu({ value, onChange, label, open, onToggle, buttonLabel }, ref) {
+  return (
+    <div className="airunit-color-menu" ref={ref}>
+      <button type="button" className="airunit-color-menu-button" onClick={onToggle}>
+        {buttonLabel}
+      </button>
+      {open && (
+        <div className="airunit-color-menu-panel">
+          <div className="airunit-color-swatches" role="group" aria-label={`${label} presets`}>
+            {COLOR_PRESETS.map((preset) => (
+              <button
+                key={preset.value}
+                type="button"
+                className={`airunit-color-swatch ${value === preset.value ? 'active' : ''}`}
+                style={{ backgroundColor: preset.value }}
+                onClick={() => onChange(preset.value)}
+                aria-label={preset.name}
+                title={preset.name}
+              />
+            ))}
+          </div>
+          <label className="airunit-color-custom">
+            <span>Manual</span>
+            <input
+              className="airunit-color"
+              type="color"
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+              aria-label={`${label} manual color`}
+            />
+          </label>
+        </div>
+      )}
+    </div>
+  )
+})
 
 function MapClickHandler({ onPick }: { onPick: (point: Point) => void }) {
   useMapEvents({
@@ -551,8 +738,8 @@ function buildGridCells(gridState: GuidanceGridState | null) {
 }
 
 function scoreColor(score: number): string {
-  if (score >= 0.6) return '#16a34a'
-  if (score >= 0.3) return '#ca8a04'
+  if (score >= 0.7) return '#16a34a'
+  if (score >= 0.35) return '#ca8a04'
   if (score > 0) return '#dc2626'
   return '#374151'
 }

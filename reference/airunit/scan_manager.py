@@ -1,3 +1,4 @@
+import json
 import os
 import signal
 import subprocess
@@ -7,7 +8,7 @@ from pathlib import Path
 from typing import Optional, Callable
 from typing import Dict
 
-WORKDIR = Path("/home/airunit/Desktop/airunit")
+WORKDIR = Path(__file__).resolve().parent
 
 
 class ScanManager:
@@ -15,6 +16,7 @@ class ScanManager:
         self,
         on_output: Optional[Callable[[str, int], None]] = None,
         on_exit: Optional[Callable[[int], None]] = None,
+        on_pose: Optional[Callable[[dict], None]] = None,
         idle_seconds: float = 5.0,
     ):
         self._proc: Optional[subprocess.Popen] = None
@@ -23,6 +25,7 @@ class ScanManager:
         self._idle_thread: Optional[threading.Thread] = None
         self._on_output = on_output
         self._on_exit = on_exit
+        self._on_pose = on_pose
 
         self._line_count = 0
         self._last_output_time: Optional[float] = None
@@ -84,6 +87,14 @@ class ScanManager:
         assert self._proc and self._proc.stdout
         for line in self._proc.stdout:
             line = line.rstrip("\n")
+            if line.startswith('{"__pose__"'):
+                try:
+                    pose = json.loads(line)
+                    if self._on_pose:
+                        self._on_pose({"type": "POSE", "lat": pose["lat"], "lon": pose["lon"], "gps_valid": pose["gps_valid"], "gps_fix": pose["gps_fix"]})
+                except Exception:
+                    pass
+                continue
             with self._lock:
                 self._line_count += 1
                 self._last_output_time = time.time()
