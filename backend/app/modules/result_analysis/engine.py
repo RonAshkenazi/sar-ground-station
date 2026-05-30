@@ -99,7 +99,7 @@ def evaluate(
                 "num_samples": pred.get("num_samples"),
                 "uncertainty_radius_m": raw_radius,
                 "distance_m": distance,
-                "covered": distance <= (float(raw_radius or 0.0)),
+                "covered": raw_radius is not None and float(raw_radius) > 0 and distance <= float(raw_radius),
                 "association_cost": distance,
                 "dominance_margin": dominance_margin,
                 "association_status": "clear_match",
