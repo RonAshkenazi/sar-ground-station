@@ -1,501 +1,170 @@
-# Codex Handoff — Enrichment Rerun from Result Analysis
+# Handoff: Result Analysis — Nearest-Assignment Score
 
 ## Requested Role
-
 [DEV:backend] + [DEV:frontend]
 
----
+## Goal
+
+When the ratio gate filters out ambiguous GTs, the strict score can collapse to 0 even when the localization is actually reasonable. Add a parallel **nearest-assignment score** that bypasses the ratio gate — always assigns each GT to its nearest cluster within `max_match_dist_m` — and return it alongside the strict score. The frontend shows it when ambiguous GTs exist, so the researcher can distinguish "confident match" quality from "did the system find the targets at all."
 
 ## Context
 
-The Result Analysis page already supports two rerun stages from the right-hand panel:
-- `"localization"` — re-runs localization only
-- `"reid"` — re-runs Re-ID → Localization
+Current flow in `engine.py`:
+- A `cost` matrix is built. GTs that fail the ratio gate get `_GATE_INF` in every cell → excluded from assignment.
+- `_linear_sum_assignment(cost)` runs on this gated matrix → `primary_pairs` → strict `score`.
+- Ambiguous GTs appear in `ambiguous_gts[]` but contribute nothing to the score.
 
-This handoff adds a third stage: `"enrichment"` — re-runs **Enrichment → Re-ID → Localization** as a chained 3-stage task. All five enrichment scoring parameters must be exposed in the UI (including the TBD-weight ones). Re-evaluation after rerun stays manual (no auto-trigger).
+With dense cluster outputs (102 clusters, 3 GTs, all `d2/d1 ≈ 1.05–1.26`), all three GTs are ambiguous at `ratio_gate=1.2` and `score.total = 0` even though every GT is within 40–90m of its nearest cluster.
 
----
-
-## Files to Change
-
-1. `backend/app/api/result_analysis.py`
-2. `frontend/src/pages/ResultAnalysisPage.tsx`
-3. `frontend/src/api/sessions.ts`
-
-Do NOT modify engine files, session_store, gt_store, or any other file.
+The fix: second pass with a `cost_nearest` matrix that ignores the ratio gate. Every GT within `max_match_dist_m` participates. Run the same assignment algorithm. Compute a parallel `nearest_score`. Return it in the response. **Do not change the strict `score` or any existing fields.**
 
 ---
 
-## Backend — `backend/app/api/result_analysis.py`
+## Backend change — `backend/app/modules/result_analysis/engine.py`
 
-### Step 1 — Update the imports at the top of `rerun_from_result_analysis`
+### Where to insert
 
-The function currently starts with these inline imports:
+After line 73 (`primary_pairs = _linear_sum_assignment(cost)`) and the existing matches/scoring block, add the nearest-assignment second pass. Insert it **before** the `return` statement.
 
-```python
-from app.api.executions import create_execution
-from app.api.localization import (
-    _LOC_06_GRID_RESOLUTION_M,
-    _LOC_UNCERTAINTY_ALPHA,
-    _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
-    _run_localization_task,
-)
-from app.modules.reid.engine import (
-    _REID_01_ASSOCIATION_THRESHOLD,
-    _REID_WIFI_BURST_WINDOW_SEC,
-    _REID_WIFI_SEQ_GAP_MAX,
-    _REID_WIFI_TIME_GAP_MAX_SEC,
-)
-```
-
-**Replace** those imports with the expanded set:
+### New code to add (inside `evaluate`, after the existing score computation block ending at line 207)
 
 ```python
-from app.api.enrichment import _find_matching_pcap
-from app.api.executions import create_execution
-from app.api.localization import (
-    _LOC_06_GRID_RESOLUTION_M,
-    _LOC_UNCERTAINTY_ALPHA,
-    _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
-    _run_localization_task,
-)
-from app.modules.enrichment.engine import (
-    _ENR_01_MATCH_THRESHOLD,
-    _ENR_02_TIME_WINDOW_MS,
-    _ENR_03_TIME_SCORE_WEIGHT,
-    _ENR_04_IDENTITY_SCORE_WEIGHT,
-    _ENR_05_WIFI_CONTEXT_WEIGHT,
-)
-from app.modules.reid.engine import (
-    _REID_01_ASSOCIATION_THRESHOLD,
-    _REID_WIFI_BURST_WINDOW_SEC,
-    _REID_WIFI_SEQ_GAP_MAX,
-    _REID_WIFI_TIME_GAP_MAX_SEC,
-)
-```
+    # --- Nearest-assignment score (no ratio gate) ---
+    cost_nearest = [[_GATE_INF] * n_gt for _ in range(n_pred)]
+    for j in range(n_gt):
+        if j in far_fn_gt_indices:
+            continue
+        sorted_by_dist = sorted(range(n_pred), key=lambda i: dist_m[i][j])
+        nearest_i = sorted_by_dist[0]
+        if dist_m[nearest_i][j] <= max_match_dist_m:
+            cost_nearest[nearest_i][j] = dist_m[nearest_i][j]
 
-### Step 2 — Add `enrichment_params` extraction
-
-The current extraction block is:
-
-```python
-stage = body.get("stage", "localization")
-reid_params = body.get("reid_params") or {}
-loc_params = body.get("localization_params") or {}
-```
-
-**Replace** with:
-
-```python
-stage = body.get("stage", "localization")
-reid_params = body.get("reid_params") or {}
-loc_params = body.get("localization_params") or {}
-enrichment_params = body.get("enrichment_params") or {}
-```
-
-### Step 3 — Update the stage validation guard
-
-Current:
-
-```python
-if stage not in {"localization", "reid"}:
-    raise HTTPException(status_code=422, detail="Only localization or reid rerun is supported")
-```
-
-**Replace** with:
-
-```python
-if stage not in {"localization", "reid", "enrichment"}:
-    raise HTTPException(status_code=422, detail="Only localization, reid, or enrichment rerun is supported")
-```
-
-### Step 4 — Insert the `enrichment` branch
-
-Insert this entire block **before** `if stage == "reid":`:
-
-```python
-if stage == "enrichment":
-    enriched_artifact = session.get("active_enriched_artifact")
-    if not enriched_artifact:
-        raise HTTPException(status_code=422, detail="No active ENRICHED artifact available for Enrichment rerun")
-    enriched_path = Path(enriched_artifact)
-    original_stem = enriched_path.stem
-    if original_stem.upper().endswith("_ENRICHED"):
-        original_stem = original_stem[:-9]
-    original_csv_path = enriched_path.parent / f"{original_stem}.csv"
-    if not original_csv_path.exists():
-        raise HTTPException(status_code=422, detail=f"Original scan CSV not found: {original_csv_path.name}")
-    pcap_path = _find_matching_pcap(original_csv_path)
-    if pcap_path is None:
-        raise HTTPException(status_code=422, detail=f"No matching PCAP found for {original_csv_path.name}")
-    calibration = session.get("calibration") or session.get("active_calibration")
-    if not calibration or calibration.get("approved") is not True:
-        raise HTTPException(status_code=422, detail="No calibration available for Enrichment rerun")
-    execution_id = create_execution("enrichment_reid_localization")
-    background_tasks.add_task(
-        _run_enrichment_then_reid_then_localization_task,
-        execution_id,
-        session_id,
-        original_csv_path,
-        pcap_path,
-        session.get("mode", "wifi"),
-        calibration["parameters"],
-        {
-            "match_threshold": enrichment_params.get("match_threshold", _ENR_01_MATCH_THRESHOLD),
-            "time_window_ms": enrichment_params.get("time_window_ms", _ENR_02_TIME_WINDOW_MS),
-            "time_score_weight": enrichment_params.get("time_score_weight", _ENR_03_TIME_SCORE_WEIGHT),
-            "identity_score_weight": enrichment_params.get("identity_score_weight", _ENR_04_IDENTITY_SCORE_WEIGHT),
-            "context_weight": enrichment_params.get("context_weight", _ENR_05_WIFI_CONTEXT_WEIGHT),
-        },
-        {
-            "association_threshold": reid_params.get("association_threshold", _REID_01_ASSOCIATION_THRESHOLD),
-            "seq_gap_max": reid_params.get("seq_gap_max", _REID_WIFI_SEQ_GAP_MAX),
-            "time_gap_max_sec": reid_params.get("time_gap_max_sec", _REID_WIFI_TIME_GAP_MAX_SEC),
-            "burst_window_sec": reid_params.get("burst_window_sec", _REID_WIFI_BURST_WINDOW_SEC),
-            "probe_requests_only": reid_params.get("probe_requests_only", False),
-        },
-        loc_params,
+    nearest_pairs = _linear_sum_assignment(cost_nearest)
+    nearest_errors = [dist_m[i][j] for i, j in nearest_pairs]
+    nearest_covered = sum(
+        1 for i, j in nearest_pairs
+        if dist_m[i][j] <= max(float(preds[i].get("radius_m") or 0.0), d_free_m)
     )
-    session["last_evaluation"] = None
-    return {"status": "pending", "execution_id": execution_id}
+    nearest_coverage = nearest_covered / max(len(nearest_pairs), 1) if nearest_pairs else 0.0
+    nearest_median_error = statistics.median(nearest_errors) if nearest_errors else None
+    nearest_recall = len(nearest_pairs) / n_gt if n_gt > 0 else 0.0
+
+    ns_containment = nearest_coverage
+    if nearest_median_error is None:
+        ns_distance = 0.0
+    elif nearest_median_error <= d_free_m:
+        ns_distance = 1.0
+    else:
+        ns_distance = max(0.0, 1.0 - ((nearest_median_error - d_free_m) / r_normalize_m) ** 2)
+    ns_count = nearest_recall
+    ns_total = w_containment * ns_containment + w_distance * ns_distance + w_count * ns_count + w_radius * s_radius
 ```
 
-### Step 5 — Add the new background task function
+### Add `nearest_score` to the return dict
 
-Append this function after `_run_reid_then_localization_task` (at the bottom of the file):
+Inside the existing `return { ... }` block (after the `"score": {...}` entry), add:
 
 ```python
-def _run_enrichment_then_reid_then_localization_task(
-    execution_id: str,
-    session_id: str,
-    csv_path: Path,
-    pcap_path: Path,
-    protocol: str,
-    calibration_parameters: dict,
-    enrichment_params: dict,
-    reid_params: dict,
-    loc_params: dict,
-) -> None:
-    from app.api.executions import update_execution
-    from app.modules.enrichment.engine import run_enrichment
-    from app.modules.localization.engine import (
-        _LOC_02_SEARCH_AREA_BUFFER_M,
-        _LOC_06_GRID_RESOLUTION_M,
-        _LOC_07_DYNAMIC_SIGMA_ALPHA,
-        _LOC_08_CONFIDENCE_CUTOFF,
-        _LOC_UNCERTAINTY_ALPHA,
-        _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
-        run_localization,
-    )
-    from app.modules.reid.engine import run_reid
-    from app.modules.session_navigation.session_store import get_session
-
-    update_execution(execution_id, status="running")
-    try:
-        enr_result = run_enrichment(
-            csv_path=csv_path,
-            pcap_path=pcap_path,
-            protocol=protocol,
-            **enrichment_params,
-        )
-        enriched_csv_path = Path(enr_result["enriched_csv_path"])
-        reid_result = run_reid(
-            enriched_csv_path=enriched_csv_path,
-            protocol=protocol,
-            **reid_params,
-        )
-        reid_csv_path = Path(reid_result["reid_csv_path"])
-        loc_result = run_localization(
-            reid_csv_path=reid_csv_path,
-            calibration=calibration_parameters,
-            bounds_mode=loc_params.get("bounds_mode", "auto_track_plus_buffer"),
-            buffer_m=loc_params.get("buffer_m", _LOC_02_SEARCH_AREA_BUFFER_M),
-            manual_bounds=None,
-            grid_resolution_m=loc_params.get("grid_resolution_m", _LOC_06_GRID_RESOLUTION_M),
-            dynamic_sigma_alpha=loc_params.get("dynamic_sigma_alpha", _LOC_07_DYNAMIC_SIGMA_ALPHA),
-            confidence_cutoff=loc_params.get("confidence_cutoff", _LOC_08_CONFIDENCE_CUTOFF),
-            uncertainty_participation_floor=loc_params.get(
-                "uncertainty_participation_floor",
-                _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
-            ),
-            uncertainty_alpha=loc_params.get("uncertainty_alpha", _LOC_UNCERTAINTY_ALPHA),
-        )
-        session = get_session(session_id)
-        if session is not None:
-            session["active_enrichment"] = {
-                "enriched_csv_path": enr_result["enriched_csv_path"],
-                "quality": enr_result,
-            }
-            session["active_enriched_artifact"] = enr_result["enriched_csv_path"]
-            session["active_reid"] = {
-                "reid_csv_path": reid_result["reid_csv_path"],
-                "quality": reid_result,
-            }
-            session["active_reid_artifact"] = reid_result["reid_csv_path"]
-            session["active_localization"] = loc_result
-            session["current_localization_result"] = loc_result
-        update_execution(
-            execution_id,
-            status="success",
-            warnings=[
-                *enr_result.get("warnings", []),
-                *reid_result.get("warnings", []),
-                *loc_result.get("warnings", []),
-            ],
-            result_metadata={
-                "enrichment": enr_result,
-                "reid": reid_result,
-                "localization": loc_result,
-            },
-            error=None,
-        )
-    except Exception as exc:  # pragma: no cover
-        update_execution(execution_id, status="failed", error=str(exc))
+        "nearest_score": {
+            "total": round(ns_total, 4),
+            "containment": round(ns_containment, 4),
+            "distance": round(ns_distance, 4),
+            "count": round(ns_count, 4),
+            "radius": round(s_radius, 4),
+            "n_matches": len(nearest_pairs),
+        },
 ```
+
+`s_radius` is reused because the radius score depends on cluster radii, not on GT assignment.
 
 ---
 
-## Frontend API — `frontend/src/api/sessions.ts`
+## Frontend changes
 
-### Update `rerunFromResultAnalysis`
+### 1. `frontend/src/api/sessions.ts` — extend `EvaluationResult`
 
-Find the current signature:
-
-```typescript
-export const rerunFromResultAnalysis = (
-  session_id: string,
-  stage: 'localization' | 'reid',
-  localization_params?: {
-    grid_resolution_m?: number
-    dynamic_sigma_alpha?: number
-    confidence_cutoff?: number
-    uncertainty_participation_floor?: number
-    uncertainty_alpha?: number
-    buffer_m?: number
-  },
-  reid_params?: {
-    association_threshold?: number
-    seq_gap_max?: number
-    time_gap_max_sec?: number
-    burst_window_sec?: number
-    probe_requests_only?: boolean
-  },
-) =>
-  apiFetch<{ status: string; execution_id?: string; localization_execution_id?: string }>(
-    `/api/sessions/${session_id}/result-analysis/rerun`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ stage, localization_params, reid_params }),
-    },
-  )
-```
-
-**Replace** with:
+Add `nearest_score` as an optional field to the `EvaluationResult` interface (after the `score` block, around line 319):
 
 ```typescript
-export const rerunFromResultAnalysis = (
-  session_id: string,
-  stage: 'localization' | 'reid' | 'enrichment',
-  localization_params?: {
-    grid_resolution_m?: number
-    dynamic_sigma_alpha?: number
-    confidence_cutoff?: number
-    uncertainty_participation_floor?: number
-    uncertainty_alpha?: number
-    buffer_m?: number
-  },
-  reid_params?: {
-    association_threshold?: number
-    seq_gap_max?: number
-    time_gap_max_sec?: number
-    burst_window_sec?: number
-    probe_requests_only?: boolean
-  },
-  enrichment_params?: {
-    match_threshold?: number
-    time_window_ms?: number
-    time_score_weight?: number
-    identity_score_weight?: number
-    context_weight?: number
-  },
-) =>
-  apiFetch<{ status: string; execution_id?: string; localization_execution_id?: string }>(
-    `/api/sessions/${session_id}/result-analysis/rerun`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ stage, localization_params, reid_params, enrichment_params }),
-    },
-  )
+  nearest_score?: {
+    total: number
+    containment: number
+    distance: number
+    count: number
+    radius: number
+    n_matches: number
+  }
 ```
 
----
+### 2. `frontend/src/pages/ResultAnalysisPage.tsx` — show nearest score
 
-## Frontend Page — `frontend/src/pages/ResultAnalysisPage.tsx`
-
-### Change 1 — Update `rerunStage` type and add `enrichmentParams` state
-
-Find:
-
-```typescript
-const [rerunStage, setRerunStage] = useState<'localization' | 'reid'>('localization')
-```
-
-**Replace** with:
-
-```typescript
-const [rerunStage, setRerunStage] = useState<'localization' | 'reid' | 'enrichment'>('localization')
-const [enrichmentParams, setEnrichmentParams] = useState({
-  match_threshold: 0.3,
-  time_window_ms: 1000.0,
-  time_score_weight: 1.0,
-  identity_score_weight: 1.0,
-  context_weight: 0.5,
-})
-```
-
-### Change 2 — Update `handleRerun` to pass enrichment params
-
-Find the `rerunFromResultAnalysis` call inside `handleRerun`:
-
-```typescript
-const started = await rerunFromResultAnalysis(
-  session.session_id,
-  rerunStage,
-  localizationParams,
-  rerunStage === 'reid' ? reidParams : undefined,
-)
-```
-
-**Replace** with:
-
-```typescript
-const started = await rerunFromResultAnalysis(
-  session.session_id,
-  rerunStage,
-  localizationParams,
-  rerunStage === 'reid' || rerunStage === 'enrichment' ? reidParams : undefined,
-  rerunStage === 'enrichment' ? enrichmentParams : undefined,
-)
-```
-
-### Change 3 — Add third radio button in the stage selector
-
-Find the two existing radio buttons in the rerun section:
+In the score panel (lines 708–734), after the closing `</div>` of the `score-grid` and after the `reliability-note` paragraph, add a secondary score block that appears only when there are ambiguous GTs and a nearest score exists:
 
 ```tsx
-<label>
-  <input
-    type="radio"
-    checked={rerunStage === 'localization'}
-    onChange={() => setRerunStage('localization')}
-  />
-  Localization only
-</label>
-<label>
-  <input type="radio" checked={rerunStage === 'reid'} onChange={() => setRerunStage('reid')} />
-  Re-ID + Loc
-</label>
-```
-
-**Replace** with:
-
-```tsx
-<label>
-  <input
-    type="radio"
-    checked={rerunStage === 'localization'}
-    onChange={() => setRerunStage('localization')}
-  />
-  Localization only
-</label>
-<label>
-  <input type="radio" checked={rerunStage === 'reid'} onChange={() => setRerunStage('reid')} />
-  Re-ID + Loc
-</label>
-<label>
-  <input
-    type="radio"
-    checked={rerunStage === 'enrichment'}
-    onChange={() => setRerunStage('enrichment')}
-  />
-  Enrichment + Re-ID + Loc
-</label>
-```
-
-### Change 4 — Add enrichment params section and update re-ID params visibility
-
-Find the existing Re-ID params section:
-
-```tsx
-{rerunStage === 'reid' && (
-  <>
-    <h3 className="param-heading">Re-ID params</h3>
-```
-
-**Replace** the entire condition opening with:
-
-```tsx
-{rerunStage === 'enrichment' && (
-  <>
-    <h3 className="param-heading">Enrichment params</h3>
-    {Object.entries(enrichmentParams).map(([k, v]) => (
-      <label key={k} className="param-row">
-        <span className="mono">{k}</span>
-        <input
-          type="number"
-          step="any"
-          value={v}
-          onChange={e =>
-            setEnrichmentParams(p => ({ ...p, [k]: parseFloat(e.target.value) }))
-          }
-        />
-      </label>
-    ))}
-  </>
+{evalResult.nearest_score && (evalResult.ambiguous_gts?.length ?? 0) > 0 && (
+  <div className="nearest-score-block">
+    <div className="nearest-score-header">
+      Nearest-assignment score
+      <HelpTip text="Score computed by ignoring the ratio gate — each GT is always assigned to its nearest cluster within max match distance. Use this when ambiguous GTs are dragging the strict score to zero." />
+    </div>
+    <div className="nearest-score-total">{(evalResult.nearest_score.total * 100).toFixed(1)}%</div>
+    <div className="score-grid">
+      <ScoreItem label="Containment" value={evalResult.nearest_score.containment} />
+      <ScoreItem label="Distance" value={evalResult.nearest_score.distance} />
+      <ScoreItem label="Count" value={evalResult.nearest_score.count} />
+      <ScoreItem label="Radius" value={evalResult.nearest_score.radius} />
+    </div>
+    <div className="metric-row">
+      <span>Nearest matches</span>
+      <span>{evalResult.nearest_score.n_matches} / {evalResult.n_gt}</span>
+    </div>
+  </div>
 )}
-{(rerunStage === 'reid' || rerunStage === 'enrichment') && (
-  <>
-    <h3 className="param-heading">Re-ID params</h3>
 ```
 
-The closing `</>` and `)}` of the old `rerunStage === 'reid'` block stays — just the opening condition has changed to `(rerunStage === 'reid' || rerunStage === 'enrichment')`.
+### 3. CSS — `frontend/src/pages/ResultAnalysisPage.css`
+
+Add styles for the new block. Keep it visually subordinate to the strict score — same layout, muted colors:
+
+```css
+.nearest-score-block {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.nearest-score-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nearest-score-total {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  margin-bottom: 6px;
+}
+```
 
 ---
 
-## Verification
+## Acceptance criteria
 
-1. Start backend: `cd backend && uvicorn app.main:app --reload`
-2. Load a scan folder that has an ENRICHED artifact and calibration approved
-3. Navigate to Result Analysis
-4. In the Rerun panel, select "Enrichment + Re-ID + Loc"
-5. Confirm enrichment params appear (match_threshold, time_window_ms, etc.) AND re-ID params appear below
-6. Click Rerun — it should poll to success
-7. The map should refresh with updated clusters
-8. Score panel stays blank (no auto re-evaluate — must click Run Evaluation manually)
-9. Change `match_threshold` to a very low value (e.g. 0.05) and rerun again — verify the match_rate changes in the execution result_metadata
+- [ ] `evaluate()` always returns `nearest_score` in the response, with `n_matches`, `total`, and four sub-scores.
+- [ ] When all GTs are ambiguous (strict `score.total = 0`), `nearest_score.total` is non-zero if GTs are within `max_match_dist_m` of any cluster.
+- [ ] When no GTs are ambiguous, `nearest_score.total ≈ score.total` (same assignment result).
+- [ ] Frontend shows the nearest-score block only when `ambiguous_gts.length > 0`.
+- [ ] Strict `score` is unchanged — no existing fields modified or removed.
+- [ ] TypeScript compiles with no errors.
 
----
+## Out of scope
 
-## Acceptance Criteria
-
-- [ ] `"enrichment"` accepted by backend rerun endpoint without 422
-- [ ] Backend derives original CSV path by stripping `_ENRICHED` suffix
-- [ ] Backend finds PCAP via `_find_matching_pcap`
-- [ ] 3-stage task runs: enrichment → reid → localization in sequence
-- [ ] Session updated: `active_enriched_artifact`, `active_reid_artifact`, `active_localization`, `current_localization_result`
-- [ ] `session["last_evaluation"]` set to None at rerun start
-- [ ] Frontend radio button "Enrichment + Re-ID + Loc" appears in Rerun panel
-- [ ] All 5 enrichment params shown and editable when stage is enrichment
-- [ ] Re-ID params section also shown when stage is enrichment
-- [ ] Existing "localization only" and "Re-ID + Loc" stages unaffected
-
----
-
-## Constraints
-
-- Only modify the three listed files
-- Do NOT change engine files (`enrichment/engine.py`, `reid/engine.py`, `localization/engine.py`)
-- Do NOT change `session_store.py`, `gt_store.py`, or canonical models
-- Do NOT run `git commit`
-- All file I/O in the task function must follow the existing pattern from `_run_reid_then_localization_task`
-- If original CSV or PCAP not found: HTTP 422 with clear message (no silent fallback)
+- Do not change the ratio gate logic, the strict score, or any existing response fields.
+- Do not add nearest-score matches to the map overlays.
+- Do not expose nearest-score as a rerun parameter.

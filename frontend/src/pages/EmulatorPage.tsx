@@ -15,6 +15,15 @@ import './EmulatorPage.css'
 type Point = [number, number]
 type PoseRate = 0 | 0.5 | 1 | 2
 
+interface SimSummary {
+  lawnmowerTimeSec: number | null
+  lawnmowerPasses: number
+  adaptiveTimeSec: number | null
+  lawnmowerRssiMean: number | null
+  adaptiveRssiMean: number | null
+  firstRefineSec: number | null
+}
+
 const DEFAULT_CENTER: Point = [31.5, 34.8]
 
 // Geometry -------------------------------------------------------------------
@@ -77,6 +86,20 @@ function _simRssi(
   return Math.max(-100, Math.min(-30, mean + _gauss() * noiseStd))
 }
 
+function _simRssiMulti(
+  dLat: number,
+  dLon: number,
+  targets: Point[],
+  altM: number,
+  rssiAt1m: number,
+  n: number,
+  noiseStd: number
+): number {
+  return Math.max(
+    ...targets.map(([tLat, tLon]) => _simRssi(dLat, dLon, tLat, tLon, altM, rssiAt1m, n, noiseStd))
+  )
+}
+
 function _sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -99,11 +122,14 @@ export default function EmulatorPage() {
   const [poseSent, setPoseSent] = useState(0)
   const [evidenceSent, setEvidenceSent] = useState(0)
   const [error, setError] = useState<string | null>(null)
-  const [targetPos, setTargetPos] = useState<Point | null>(null)
-  const [simMode, setSimMode] = useState<'lawnmower' | 'adaptive' | 'both'>('both')
+  const [targetPositions, setTargetPositions] = useState<Point[]>([])
+  const [simSummary, setSimSummary] = useState<SimSummary | null>(null)
+  const [liveDistM, setLiveDistM] = useState<number | null>(null)
+  const [comparePhase, setComparePhase] = useState<'lawnmower' | 'adaptive' | null>(null)
+  const [simMode, setSimMode] = useState<'lawnmower' | 'adaptive' | 'compare'>('compare')
   const [simRunning, setSimRunning] = useState(false)
   const [simPhase, setSimPhase] = useState<'idle' | 'lawnmower' | 'adaptive' | 'done'>('idle')
-  const [simProgress, setSimProgress] = useState({ done: 0, total: 0 })
+  const [simProgress, setSimProgress] = useState({ done: 0, total: 0, pass: 1 })
   const [speedMps, setSpeedMps] = useState(8)
   const [altitudeM, setAltitudeM] = useState(10)
   const [rssiAt1m, setRssiAt1m] = useState(-35)
@@ -202,8 +228,7 @@ export default function EmulatorPage() {
   function handleMapClick(lat: number, lng: number) {
     const next: Point = [lat, lng]
     if (clickMode === 'target') {
-      setTargetPos(next)
-      setClickMode('drone')
+      setTargetPositions((prev) => [...prev, next])
       return
     }
     if (clickMode === 'draw') {
@@ -250,12 +275,12 @@ export default function EmulatorPage() {
   }
 
   async function runSimulation() {
-    if (!drawBounds || !targetPos || !gridInitialized) return
+    if (!drawBounds || targetPositions.length === 0) return
 
     const cfg = {
       bounds: drawBounds,
       cellSize: cellSizeM,
-      target: targetPos,
+      targets: targetPositions,
       speed: speedMps,
       alt: altitudeM,
       rssiAt1m,
@@ -268,8 +293,9 @@ export default function EmulatorPage() {
 
     simStopRef.current = false
     setSimRunning(true)
-    setSimPhase('lawnmower')
-    setSimProgress({ done: 0, total: 0 })
+    setSimSummary(null)
+    setLiveDistM(null)
+    setComparePhase(null)
 
     const { min_lat, max_lat, min_lon, max_lon } = cfg.bounds
     const latSpanM = _haversineM(min_lat, min_lon, max_lat, min_lon)
@@ -280,15 +306,29 @@ export default function EmulatorPage() {
     const lonStep = (max_lon - min_lon) / nCols
     const TICK = 250
 
+    async function initFreshGrid() {
+      await resetGuidance()
+      await initGuidance(cfg.bounds, cfg.cellSize)
+      setGridState(await getGuidanceGrid())
+      setGridInitialized(true)
+      setRecommendation(null)
+      setPoseSent(0)
+      setEvidenceSent(0)
+    }
+
     let drone: Point = [(min_lat + max_lat) / 2, (min_lon + max_lon) / 2]
-    setDronePos([...drone])
 
     let rssiBuf: number[] = []
     let poseMs = 0
     let evMs = 0
 
-    function tick(rssi: number) {
-      rssiBuf.push(rssi)
+    function resetPhaseCounters() {
+      rssiBuf = []
+      poseMs = 0
+      evMs = 0
+    }
+
+    function tick() {
       poseMs += TICK
       evMs += TICK
     }
@@ -306,7 +346,8 @@ export default function EmulatorPage() {
       setPoseSent((n) => n + 1)
     }
 
-    async function flushEvidence() {
+    async function flushEvidence(rssi: number) {
+      rssiBuf.push(rssi)
       if (evMs < 2000 || rssiBuf.length === 0) return
       evMs = 0
       const sorted = [...rssiBuf].sort((a, b) => a - b)
@@ -329,63 +370,123 @@ export default function EmulatorPage() {
       rssiBuf = []
     }
 
-    if (cfg.mode === 'lawnmower' || cfg.mode === 'both') {
-      const totalWP = nRows * nCols
-      setSimProgress({ done: 0, total: totalWP })
-      let wpDone = 0
+    async function drainRssiBuf() {
+      if (rssiBuf.length === 0) return
+      const sorted = [...rssiBuf].sort((a, b) => a - b)
+      const p95 = sorted[Math.max(0, Math.floor(0.95 * sorted.length) - 1)]
+      const nStrong = rssiBuf.filter((r) => r >= cfg.strongThr).length
+      const mean = rssiBuf.reduce((s, r) => s + r, 0) / rssiBuf.length
+      await ingestGuidancePacket({
+        type: 'EVIDENCE',
+        lat: drone[0],
+        lon: drone[1],
+        dwell_ms: 2000,
+        win_ms: 2000,
+        frames_total: rssiBuf.length,
+        frames_strong: nStrong,
+        rssi_max_dbm: Math.max(...rssiBuf),
+        rssi_p95_dbm: p95,
+        rssi_mean_dbm: mean,
+      }).catch(() => {})
+      rssiBuf = []
+    }
 
-      for (let row = 0; row < nRows; row++) {
-        if (simStopRef.current) break
-        const rowLat = min_lat + (row + 0.5) * latStep
-        const cols =
-          row % 2 === 0
-            ? Array.from({ length: nCols }, (_, i) => i)
-            : Array.from({ length: nCols }, (_, i) => nCols - 1 - i)
+    async function runLawnmower(durationMs: number): Promise<{ timeSec: number; rssiMean: number; passes: number }> {
+      setSimPhase('lawnmower')
+      setSimProgress({ done: 0, total: 0, pass: 1 })
+      drone = [(min_lat + max_lat) / 2, (min_lon + max_lon) / 2]
+      setDronePos([...drone])
+      resetPhaseCounters()
 
-        for (const col of cols) {
-          if (simStopRef.current) break
-          const wpLon = min_lon + (col + 0.5) * lonStep
+      let ticks = 0
+      let rssiSum = 0
+      let rssiCount = 0
+      let elapsedMs = 0
+      let pass = 0
 
-          while (!simStopRef.current) {
-            const dist = _haversineM(drone[0], drone[1], rowLat, wpLon)
-            if (dist < cfg.cellSize * 0.4) break
-            const bear = _bearingDeg(drone[0], drone[1], rowLat, wpLon)
-            const step = Math.min((cfg.speed * TICK) / 1000, dist)
-            drone = _movePt(drone[0], drone[1], bear, step)
-            setDronePos([...drone])
+      while (elapsedMs < durationMs && !simStopRef.current) {
+        pass++
+        const totalWP = nRows * nCols
+        setSimProgress({ done: 0, total: totalWP, pass })
+        let wpDone = 0
 
-            const rssi = _simRssi(
-              drone[0],
-              drone[1],
-              cfg.target[0],
-              cfg.target[1],
-              cfg.alt,
-              cfg.rssiAt1m,
-              cfg.n,
-              cfg.noise
-            )
-            tick(rssi)
-            await flushPose()
-            await flushEvidence()
-            await _sleep(TICK)
+        drone = [(min_lat + max_lat) / 2, (min_lon + max_lon) / 2]
+        setDronePos([...drone])
+
+        for (let row = 0; row < nRows; row++) {
+          if (simStopRef.current || elapsedMs >= durationMs) break
+          const rowLat = min_lat + (row + 0.5) * latStep
+          const cols =
+            row % 2 === 0
+              ? Array.from({ length: nCols }, (_, i) => i)
+              : Array.from({ length: nCols }, (_, i) => nCols - 1 - i)
+
+          for (const col of cols) {
+            if (simStopRef.current || elapsedMs >= durationMs) break
+            const wpLon = min_lon + (col + 0.5) * lonStep
+
+            while (!simStopRef.current && elapsedMs < durationMs) {
+              const dist = _haversineM(drone[0], drone[1], rowLat, wpLon)
+              if (dist < cfg.cellSize * 0.4) break
+              const bear = _bearingDeg(drone[0], drone[1], rowLat, wpLon)
+              const step = Math.min((cfg.speed * TICK) / 1000, dist)
+              drone = _movePt(drone[0], drone[1], bear, step)
+              setDronePos([...drone])
+
+              const rssi = _simRssiMulti(drone[0], drone[1], cfg.targets, cfg.alt, cfg.rssiAt1m, cfg.n, cfg.noise)
+              rssiSum += rssi
+              rssiCount++
+              ticks++
+              elapsedMs += TICK
+              tick()
+              await flushPose()
+              await flushEvidence(rssi)
+              await _sleep(TICK)
+            }
+            if (!simStopRef.current && elapsedMs < durationMs) {
+              const rssi = _simRssiMulti(drone[0], drone[1], cfg.targets, cfg.alt, cfg.rssiAt1m, cfg.n, cfg.noise)
+              rssiSum += rssi
+              rssiCount++
+              ticks++
+              elapsedMs += TICK
+              tick()
+              await flushPose()
+              await flushEvidence(rssi)
+              await _sleep(TICK)
+            }
+            wpDone++
+            setSimProgress({ done: wpDone, total: totalWP, pass })
           }
-          wpDone++
-          setSimProgress({ done: wpDone, total: totalWP })
         }
+      }
+
+      await drainRssiBuf()
+      return {
+        timeSec: (ticks * TICK) / 1000,
+        rssiMean: rssiCount > 0 ? rssiSum / rssiCount : 0,
+        passes: pass,
       }
     }
 
-    if ((cfg.mode === 'adaptive' || cfg.mode === 'both') && !simStopRef.current) {
+    async function runAdaptive(): Promise<{ timeSec: number; rssiMean: number; firstRefineSec: number | null }> {
       setSimPhase('adaptive')
-      if (cfg.mode === 'both') await _sleep(1000)
+      drone = [(min_lat + max_lat) / 2, (min_lon + max_lon) / 2]
+      setDronePos([...drone])
+      resetPhaseCounters()
 
       let elapsed = 0
       let recPollMs = 0
       let recTarget: Point = drone
+      let orbitAngle = 0
+      let firstRefineSec: number | null = null
+      let ticks = 0
+      let rssiSum = 0
+      let rssiCount = 0
 
       while (elapsed < cfg.adaptiveDuration && !simStopRef.current) {
         recPollMs += TICK
         elapsed += TICK
+        ticks++
 
         if (recPollMs >= 1000) {
           recPollMs = 0
@@ -393,6 +494,9 @@ export default function EmulatorPage() {
             const rec = await getGuidanceRecommendation()
             if ('available' in rec && rec.available) {
               recTarget = [rec.target_lat, rec.target_lon]
+              if (firstRefineSec === null && rec.reason?.includes('REFINE')) {
+                firstRefineSec = elapsed / 1000
+              }
             }
           } catch {
             // Ignore transient recommendation failures during simulation.
@@ -400,35 +504,90 @@ export default function EmulatorPage() {
         }
 
         const dist = _haversineM(drone[0], drone[1], recTarget[0], recTarget[1])
-        if (dist > 1) {
+        const orbitRadius = cfg.cellSize
+
+        if (dist > orbitRadius) {
           const bear = _bearingDeg(drone[0], drone[1], recTarget[0], recTarget[1])
           const step = Math.min((cfg.speed * TICK) / 1000, dist)
           drone = _movePt(drone[0], drone[1], bear, step)
-          setDronePos([...drone])
+        } else {
+          const angularStepDeg = ((cfg.speed * TICK) / 1000 / orbitRadius) * (180 / Math.PI)
+          orbitAngle = (orbitAngle + angularStepDeg) % 360
+          drone = _movePt(recTarget[0], recTarget[1], orbitAngle, orbitRadius)
         }
+        setDronePos([...drone])
 
-        const rssi = _simRssi(
-          drone[0],
-          drone[1],
-          cfg.target[0],
-          cfg.target[1],
-          cfg.alt,
-          cfg.rssiAt1m,
-          cfg.n,
-          cfg.noise
+        const nearestDist = Math.min(
+          ...cfg.targets.map(([tLat, tLon]) => _haversineM(drone[0], drone[1], tLat, tLon))
         )
-        tick(rssi)
+        setLiveDistM(nearestDist)
+
+        const rssi = _simRssiMulti(drone[0], drone[1], cfg.targets, cfg.alt, cfg.rssiAt1m, cfg.n, cfg.noise)
+        rssiSum += rssi
+        rssiCount++
+        tick()
         await flushPose()
-        await flushEvidence()
+        await flushEvidence(rssi)
         await _sleep(TICK)
+      }
+
+      await drainRssiBuf()
+      return {
+        timeSec: (ticks * TICK) / 1000,
+        rssiMean: rssiCount > 0 ? rssiSum / rssiCount : 0,
+        firstRefineSec,
       }
     }
 
-    if (rssiBuf.length > 0) await flushEvidence()
+    try {
+      if (cfg.mode === 'lawnmower') {
+        await initFreshGrid()
+        const lawn = await runLawnmower(cfg.adaptiveDuration)
+        setSimSummary({
+          lawnmowerTimeSec: lawn.timeSec,
+          lawnmowerPasses: lawn.passes,
+          adaptiveTimeSec: null,
+          lawnmowerRssiMean: lawn.rssiMean,
+          adaptiveRssiMean: null,
+          firstRefineSec: null,
+        })
+      } else if (cfg.mode === 'adaptive') {
+        await initFreshGrid()
+        const adapt = await runAdaptive()
+        setSimSummary({
+          lawnmowerTimeSec: null,
+          lawnmowerPasses: 0,
+          adaptiveTimeSec: adapt.timeSec,
+          lawnmowerRssiMean: null,
+          adaptiveRssiMean: adapt.rssiMean,
+          firstRefineSec: adapt.firstRefineSec,
+        })
+      } else {
+        setComparePhase('lawnmower')
+        await initFreshGrid()
+        const lawn = await runLawnmower(cfg.adaptiveDuration)
 
-    simStopRef.current = false
-    setSimRunning(false)
-    setSimPhase('done')
+        if (!simStopRef.current) {
+          setComparePhase('adaptive')
+          await initFreshGrid()
+          const adapt = await runAdaptive()
+          setSimSummary({
+            lawnmowerTimeSec: lawn.timeSec,
+            lawnmowerPasses: lawn.passes,
+            adaptiveTimeSec: adapt.timeSec,
+            lawnmowerRssiMean: lawn.rssiMean,
+            adaptiveRssiMean: adapt.rssiMean,
+            firstRefineSec: adapt.firstRefineSec,
+          })
+        }
+      }
+    } finally {
+      simStopRef.current = false
+      setSimRunning(false)
+      setSimPhase('done')
+      setLiveDistM(null)
+      setComparePhase(null)
+    }
   }
 
   return (
@@ -444,10 +603,20 @@ export default function EmulatorPage() {
         <button
           className={`emu-btn ${clickMode === 'target' ? 'emu-btn-active' : ''}`}
           onClick={() => setClickMode((m) => (m === 'target' ? 'drone' : 'target'))}
-          title="Click on the map to place the virtual RF target"
+          title="Click map to place targets (multiple allowed)"
         >
-          {clickMode === 'target' ? 'Click to place target...' : 'Set Target'}
+          {clickMode === 'target' ? `Placing T${targetPositions.length + 1}...` : `Set Targets (${targetPositions.length})`}
         </button>
+        {targetPositions.length > 0 && (
+          <button
+            className="emu-btn"
+            onClick={() => setTargetPositions([])}
+            disabled={simRunning}
+            title="Remove all targets"
+          >
+            Clear Targets
+          </button>
+        )}
         <button className="emu-btn" onClick={handleReset} disabled={simRunning}>Reset</button>
         <button className="emu-btn" disabled={!drawBounds || simRunning} onClick={handleInit}>
           Init Grid {drawBounds ? `(${cellSizeM}m)` : '- draw first'}
@@ -465,9 +634,9 @@ export default function EmulatorPage() {
         {!simRunning ? (
           <button
             className="emu-btn emu-btn-start"
-            disabled={!gridInitialized || !targetPos}
+            disabled={simRunning || targetPositions.length === 0 || !drawBounds}
             onClick={() => { void runSimulation() }}
-            title={!targetPos ? 'Place a target first' : !gridInitialized ? 'Init grid first' : ''}
+            title={targetPositions.length === 0 ? 'Place a target first' : !drawBounds ? 'Draw boundary first' : ''}
           >
             Start Sim
           </button>
@@ -487,8 +656,26 @@ export default function EmulatorPage() {
           <span className="emu-sim-chip">
             {simPhase.toUpperCase()}
             {simPhase === 'lawnmower' && simProgress.total > 0
-              ? ` ${simProgress.done}/${simProgress.total}`
+              ? ` P${simProgress.pass} ${simProgress.done}/${simProgress.total}`
               : ''}
+          </span>
+        )}
+        {simRunning && comparePhase && (
+          <span className="emu-sim-chip" style={{ background: '#7c3aed' }}>
+            COMPARE - {comparePhase === 'lawnmower' ? '1/2 Lawnmower' : '2/2 Adaptive'}
+          </span>
+        )}
+        {simRunning && simPhase === 'adaptive' && liveDistM !== null && (
+          <span className="emu-sim-chip" style={{ background: liveDistM < 15 ? '#16a34a' : '#ca8a04' }}>
+            {liveDistM < 15 ? 'TARGET CLOSE' : 'SEARCHING'} {liveDistM.toFixed(0)}m
+          </span>
+        )}
+        {simSummary && simPhase === 'done' && simSummary.adaptiveRssiMean !== null && simSummary.lawnmowerRssiMean !== null && (
+          <span
+            className="emu-sim-chip"
+            style={{ background: simSummary.adaptiveRssiMean > simSummary.lawnmowerRssiMean ? '#16a34a' : '#dc2626' }}
+          >
+            Adaptive {(simSummary.adaptiveRssiMean - simSummary.lawnmowerRssiMean).toFixed(1)} dBm vs lawn
           </span>
         )}
         {gridState?.initialized && (
@@ -509,26 +696,30 @@ export default function EmulatorPage() {
           <div className="emu-sim-section">
             <div className="emu-label">Simulator Mode</div>
             <div className="emu-btn-row">
-              {(['lawnmower', 'adaptive', 'both'] as const).map((mode) => (
+              {(['lawnmower', 'adaptive', 'compare'] as const).map((mode) => (
                 <button
                   key={mode}
                   className={`emu-btn ${simMode === mode ? 'emu-btn-active' : ''}`}
                   onClick={() => setSimMode(mode)}
                   disabled={simRunning}
                 >
-                  {mode === 'lawnmower' ? 'Lawn' : mode === 'adaptive' ? 'Adapt' : 'Both'}
+                  {mode === 'lawnmower' ? 'Lawn' : mode === 'adaptive' ? 'Adapt' : 'Compare'}
                 </button>
               ))}
             </div>
 
-            <div className="emu-label emu-gap-top">Target</div>
-            {targetPos ? (
-              <div className="emu-stat-row emu-target-coords">
-                <span>{targetPos[0].toFixed(5)}</span>
-                <span>{targetPos[1].toFixed(5)}</span>
-              </div>
+            <div className="emu-label emu-gap-top">Targets ({targetPositions.length})</div>
+            {targetPositions.length === 0 ? (
+              <div className="emu-hint">Use "Set Targets" button, then click map</div>
             ) : (
-              <div className="emu-hint">Use "Set Target" button, then click map</div>
+              targetPositions.map((target, index) => (
+                <div key={index} className="emu-stat-row emu-target-coords">
+                  <span>T{index + 1}</span>
+                  <span>
+                    {target[0].toFixed(5)}, {target[1].toFixed(5)}
+                  </span>
+                </div>
+              ))
             )}
 
             <Slider label={`Speed: ${speedMps} m/s`} min={1} max={20} step={1} value={speedMps} onChange={setSpeedMps} disabled={simRunning} />
@@ -542,6 +733,52 @@ export default function EmulatorPage() {
             <Slider label={`Adaptive: ${adaptiveDurationS}s`} min={30} max={600} step={30} value={adaptiveDurationS} onChange={setAdaptiveDurationS} disabled={simRunning} />
 
             <div className="emu-sim-divider" />
+            {simSummary && (
+              <div className="emu-control-group">
+                <div className="emu-label">Phase Comparison</div>
+                {simSummary.lawnmowerTimeSec !== null && (
+                  <div className="emu-stat-row">
+                    <span>Lawn time</span>
+                    <span>{simSummary.lawnmowerTimeSec.toFixed(0)}s ({simSummary.lawnmowerPasses} pass{simSummary.lawnmowerPasses !== 1 ? 'es' : ''})</span>
+                  </div>
+                )}
+                {simSummary.adaptiveTimeSec !== null && (
+                  <div className="emu-stat-row"><span>Adaptive time</span><span>{simSummary.adaptiveTimeSec.toFixed(0)}s</span></div>
+                )}
+                {simSummary.lawnmowerRssiMean !== null && (
+                  <div className="emu-stat-row"><span>Lawn RSSI mean</span><span>{simSummary.lawnmowerRssiMean.toFixed(1)} dBm</span></div>
+                )}
+                {simSummary.adaptiveRssiMean !== null && (
+                  <div
+                    className="emu-stat-row"
+                    style={{
+                      color: simSummary.lawnmowerRssiMean !== null && simSummary.adaptiveRssiMean > simSummary.lawnmowerRssiMean
+                        ? '#16a34a'
+                        : '#dc2626',
+                    }}
+                  >
+                    <span>Adaptive RSSI mean</span><span>{simSummary.adaptiveRssiMean.toFixed(1)} dBm</span>
+                  </div>
+                )}
+                {simSummary.lawnmowerRssiMean !== null && simSummary.adaptiveRssiMean !== null && (
+                  <div
+                    className="emu-stat-row"
+                    style={{ color: simSummary.adaptiveRssiMean > simSummary.lawnmowerRssiMean ? '#16a34a' : '#dc2626' }}
+                  >
+                    <span>Improvement</span>
+                    <span>
+                      {simSummary.adaptiveRssiMean > simSummary.lawnmowerRssiMean ? '+' : ''}
+                      {(simSummary.adaptiveRssiMean - simSummary.lawnmowerRssiMean).toFixed(1)} dBm
+                    </span>
+                  </div>
+                )}
+                {simSummary.firstRefineSec !== null && (
+                  <div className="emu-stat-row">
+                    <span>REFINE triggered</span><span>@{simSummary.firstRefineSec.toFixed(0)}s</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <div className="emu-control-group">
             <div className="emu-label">Drone</div>
@@ -633,17 +870,18 @@ export default function EmulatorPage() {
                 pathOptions={{ color: '#fff', fillColor: '#3b82f6', fillOpacity: 1, weight: 2 }}
               />
             )}
-            {targetPos && (
+            {targetPositions.map((target, index) => (
               <CircleMarker
-                center={targetPos}
+                key={index}
+                center={target}
                 radius={10}
                 pathOptions={{ color: '#fff', fillColor: '#ef4444', fillOpacity: 0.9, weight: 2 }}
               >
                 <Tooltip permanent direction="top" offset={[0, -12]}>
-                  <span style={{ fontSize: 11 }}>Target</span>
+                  <span style={{ fontSize: 11 }}>T{index + 1}</span>
                 </Tooltip>
               </CircleMarker>
-            )}
+            ))}
             {dronePos && recommendation && (
               <Polyline
                 positions={[dronePos, [recommendation.target_lat, recommendation.target_lon]]}
