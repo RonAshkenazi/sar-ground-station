@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { divIcon } from 'leaflet'
-import { Circle, CircleMarker, MapContainer, Marker, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet'
+import { Circle, CircleMarker, MapContainer, Marker, Polygon, Polyline, Rectangle, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet'
 import {
   addGtPoint,
   deleteGtPoint,
@@ -18,6 +18,7 @@ import {
 import HelpTip from '../components/HelpTip'
 import { HELP } from '../helpTexts'
 import { useSession } from '../state/SessionContext'
+import { circleIntersectionAreaM2, pointInPolygon, polygonAreaM2 } from '../utils/geoUtils'
 import './ResultAnalysisPage.css'
 
 type MapLayer = 'satellite' | 'osm'
@@ -25,7 +26,7 @@ type MapLayer = 'satellite' | 'osm'
 const CLUSTER_COLORS = ['#1f6feb', '#15803d', '#b45309', '#b91c1c', '#7c3aed', '#0f766e']
 
 export default function ResultAnalysisPage() {
-  const { session, refreshSession } = useSession()
+  const { session, refreshSession, lassoPolygon, setLassoPolygon } = useSession()
   const [raState, setRaState] = useState<ResultAnalysisState | null>(null)
   const [evalResult, setEvalResult] = useState<EvaluationResult | null>(null)
   const [addingGt, setAddingGt] = useState(false)
@@ -34,8 +35,11 @@ export default function ResultAnalysisPage() {
   const [showHeatmap, setShowHeatmap] = useState(true)
   const [showUncertaintyRadii, setShowUncertaintyRadii] = useState(true)
   const [showPeaks, setShowPeaks] = useState(true)
+  const [heatmapStride, setHeatmapStride] = useState(1)
   const [showStaticClusters, setShowStaticClusters] = useState(true)
   const [hiddenClusters, setHiddenClusters] = useState<Set<string>>(new Set())
+  const [expectedEmitters, setExpectedEmitters] = useState<number | ''>(1)
+  const [circleOverlapThreshold, setCircleOverlapThreshold] = useState(0.20)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [rerunStatus, setRerunStatus] = useState<string | null>(null)
@@ -86,20 +90,71 @@ export default function ResultAnalysisPage() {
     () => (localization?.cluster_results ?? []).filter((cluster) => cluster.status === 'success' && cluster.primary_peak),
     [localization],
   )
+  const zoneClusterIds = useMemo<Set<string> | null>(() => {
+    if (!lassoPolygon) return null
+    return new Set(
+      successfulClusters
+        .filter((cluster) => cluster.primary_peak != null && pointInPolygon(cluster.primary_peak.lat, cluster.primary_peak.lon, lassoPolygon))
+        .map((cluster) => cluster.cluster_id),
+    )
+  }, [successfulClusters, lassoPolygon])
   const visibleClusterIds = useMemo(
     () =>
       new Set(
         successfulClusters
           .filter((cluster) => showStaticClusters || cluster.cluster_type !== 'static')
           .filter((cluster) => !hiddenClusters.has(cluster.cluster_id))
+          .filter((cluster) => !zoneClusterIds || zoneClusterIds.has(cluster.cluster_id))
           .map((cluster) => cluster.cluster_id),
       ),
-    [successfulClusters, showStaticClusters, hiddenClusters],
+    [successfulClusters, showStaticClusters, hiddenClusters, zoneClusterIds],
   )
   const visibleClusters = useMemo(
     () => successfulClusters.filter((cluster) => visibleClusterIds.has(cluster.cluster_id)),
     [successfulClusters, visibleClusterIds],
   )
+  const zoneGtIds = useMemo<Set<string> | null>(() => {
+    if (!lassoPolygon || !raState?.gt_points) return null
+    return new Set(
+      raState.gt_points
+        .filter((point) => pointInPolygon(point.lat, point.lon, lassoPolygon))
+        .map((point) => point.gt_id),
+    )
+  }, [raState?.gt_points, lassoPolygon])
+  const test1 = useMemo(() => {
+    if (!lassoPolygon || typeof expectedEmitters !== 'number' || expectedEmitters < 1) return null
+
+    // Count circles (across all uncertainty_regions) where ≥ circleOverlapThreshold of the circle
+    // is inside the zone. Only clusters whose peak is inside the zone (visibleClusters) are considered.
+    let nCircles = 0
+    for (const cluster of visibleClusters) {
+      for (const region of cluster.uncertainty_regions) {
+        if (region.radius_m <= 0) continue
+        const fullArea = Math.PI * region.radius_m * region.radius_m
+        const inArea = circleIntersectionAreaM2(region.center_lat, region.center_lon, region.radius_m, lassoPolygon)
+        if (inArea / fullArea >= circleOverlapThreshold) nCircles++
+      }
+    }
+    const nExpected = expectedEmitters
+    const sCount = Math.max(0, 1 - Math.abs(nCircles - nExpected) / nExpected)
+    const lassoArea = polygonAreaM2(lassoPolygon)
+    // Area = sum of intersection areas for all circles of qualifying clusters.
+    const circleArea = visibleClusters.reduce((sum, cluster) => {
+      return sum + cluster.uncertainty_regions.reduce((s, region) => {
+        if (region.radius_m <= 0) return s
+        return s + circleIntersectionAreaM2(region.center_lat, region.center_lon, region.radius_m, lassoPolygon)
+      }, 0)
+    }, 0)
+    const areaRatio = lassoArea > 0 ? circleArea / lassoArea : 1
+    const sArea = Math.max(0, 1 - areaRatio * areaRatio)
+    const total = (sCount + sArea) / 2
+
+    return { total, sCount, sArea, nCircles, nExpected, circleArea, lassoArea, areaRatio }
+  }, [lassoPolygon, expectedEmitters, circleOverlapThreshold, visibleClusters])
+  const combinedScore = useMemo(() => {
+    if (!test1 || !evalResult) return null
+    return (test1.total + evalResult.score.total) / 2
+  }, [test1, evalResult])
   const mapCenter: [number, number] = localization
     ? [(localization.bounds.lat_min + localization.bounds.lat_max) / 2, (localization.bounds.lon_min + localization.bounds.lon_max) / 2]
     : [32.0, 34.8]
@@ -124,6 +179,11 @@ export default function ResultAnalysisPage() {
   useEffect(() => {
     void loadState()
   }, [session?.session_id])
+
+  useEffect(() => {
+    const count = raState?.gt_points?.length ?? 0
+    if (count > 0) setExpectedEmitters(count)
+  }, [raState?.gt_points?.length])
 
   async function loadState() {
     if (!session?.session_id) {
@@ -230,7 +290,10 @@ export default function ResultAnalysisPage() {
     setLoading(true)
     setError(null)
     try {
-      const result = await runEvaluation(session.session_id, evalParams)
+      const params: Parameters<typeof runEvaluation>[1] = { ...evalParams }
+      if (zoneClusterIds) params.cluster_ids = [...zoneClusterIds]
+      if (zoneGtIds) params.gt_ids = [...zoneGtIds]
+      const result = await runEvaluation(session.session_id, params)
       setEvalResult(result)
       await loadState()
     } catch (err: unknown) {
@@ -411,6 +474,38 @@ export default function ResultAnalysisPage() {
                 />
               </label>
             ))}
+            <div className="eval-param-row">
+              <label>
+                Expected emitters (Test 1) <HelpTip text={HELP.expected_emitters} />
+              </label>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={expectedEmitters}
+                onChange={(event) => {
+                  if (event.target.value === '') {
+                    setExpectedEmitters('')
+                    return
+                  }
+                  const nextValue = parseInt(event.target.value, 10)
+                  setExpectedEmitters(Number.isNaN(nextValue) ? '' : Math.max(1, nextValue))
+                }}
+              />
+            </div>
+            <div className="eval-param-row">
+              <label>
+                Circle overlap threshold (Test 1) <HelpTip text={HELP.circle_overlap_threshold} />
+              </label>
+              <input
+                type="number"
+                min="0.01"
+                max="1"
+                step="0.05"
+                value={circleOverlapThreshold}
+                onChange={(event) => setCircleOverlapThreshold(Math.min(1, Math.max(0.01, Number(event.target.value))))}
+              />
+            </div>
             <button className="btn-primary" disabled={!session || loading || !raState?.localization_available} onClick={handleEvaluate}>
               Run Evaluation
             </button>
@@ -440,7 +535,16 @@ export default function ResultAnalysisPage() {
             </label>
             <div className="cluster-list">
               {successfulClusters.map((cluster) => (
-                <label key={cluster.cluster_id} className={`cluster-row ${hiddenClusters.has(cluster.cluster_id) ? 'cluster-row-hidden' : ''}`}>
+                <label
+                  key={cluster.cluster_id}
+                  className={[
+                    'cluster-row',
+                    hiddenClusters.has(cluster.cluster_id) ? 'cluster-row-hidden' : '',
+                    zoneClusterIds && !zoneClusterIds.has(cluster.cluster_id) ? 'cluster-row-out-of-zone' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                >
                   <span className="cluster-swatch" style={{ background: clusterColor(cluster.cluster_id) }} />
                   <input
                     type="checkbox"
@@ -559,22 +663,31 @@ export default function ResultAnalysisPage() {
 
         <main className="result-analysis-main">
           <div className="map-controls">
+            <span className="map-ctrl-section">Layers</span>
             <label className="map-control-check">
               <input type="checkbox" checked={showHeatmap} onChange={(event) => setShowHeatmap(event.target.checked)} />
-              Heatmap <HelpTip text={HELP.heatmap} left />
+              Heatmap — signal strength grid <HelpTip text={HELP.heatmap} left />
             </label>
             <label className="map-control-check">
-              <input
-                type="checkbox"
-                checked={showUncertaintyRadii}
-                onChange={(event) => setShowUncertaintyRadii(event.target.checked)}
-              />
-              Radii <HelpTip text={HELP.radii} left />
+              <input type="checkbox" checked={showUncertaintyRadii} onChange={(event) => setShowUncertaintyRadii(event.target.checked)} />
+              Radii — uncertainty circles <HelpTip text={HELP.radii} left />
             </label>
             <label className="map-control-check">
               <input type="checkbox" checked={showPeaks} onChange={(event) => setShowPeaks(event.target.checked)} />
-              Peaks <HelpTip text={HELP.peaks} left />
+              Peaks — estimated positions <HelpTip text={HELP.peaks} left />
             </label>
+            <div className="map-controls-divider" />
+            <span className="map-ctrl-section">Heatmap settings</span>
+            <div className="map-ctrl-pair">
+              <span className="map-ctrl-label">Dot stride</span>
+              <input
+                type="number" min={1} max={20} step={1}
+                value={heatmapStride}
+                onChange={(event) => setHeatmapStride(Math.min(20, Math.max(1, Number(event.target.value))))}
+                className="heatmap-stride-input"
+                title="Show every Nth dot. 1 = all dots (~2 m apart at default grid). 5 = every 5th dot (~10 m apart)."
+              />
+            </div>
             <div className="map-controls-divider" />
             <div className="map-legend">
               <span className="legend-ambiguous-gt" aria-hidden="true" />
@@ -591,6 +704,23 @@ export default function ResultAnalysisPage() {
                 Map
               </button>
             </div>
+            <div className="map-controls-divider" />
+            {lassoPolygon ? (
+              <>
+                <span className="zone-badge">{visibleClusters.length} clusters in zone</span>
+                <button
+                  className="layer-btn"
+                  onClick={() => {
+                    setLassoPolygon(null)
+                    setEvalResult(null)
+                  }}
+                >
+                  Clear Zone
+                </button>
+              </>
+            ) : (
+              <span className="zone-badge-empty">No zone - draw on Localization page</span>
+            )}
           </div>
           <MapContainer center={mapCenter} zoom={15} maxZoom={23} className={`result-analysis-map${addingGt ? ' gt-adding-mode' : ''}`}>
             {localization && <SetView center={mapCenter} zoom={16} />}
@@ -610,9 +740,27 @@ export default function ResultAnalysisPage() {
               />
             )}
             <GtClickHandler enabled={addingGt} onAdd={handleAddGt} />
+            {localization && (
+              <Rectangle
+                bounds={[[localization.bounds.lat_min, localization.bounds.lon_min], [localization.bounds.lat_max, localization.bounds.lon_max]]}
+                pathOptions={{ color: '#94a3b8', weight: 1.5, dashArray: '6 4', fillOpacity: 0, opacity: 0.7 }}
+              />
+            )}
+            {lassoPolygon && (
+              <Polygon
+                positions={lassoPolygon}
+                pathOptions={{
+                  color: '#facc15',
+                  weight: 2,
+                  dashArray: '8 5',
+                  fillOpacity: 0.06,
+                  opacity: 0.9,
+                }}
+              />
+            )}
             {showHeatmap &&
               successfulClusters.flatMap((cluster) =>
-                (visibleClusterIds.has(cluster.cluster_id) ? cluster.grid_cells : []).map((cell, idx) => (
+                (visibleClusterIds.has(cluster.cluster_id) ? cluster.grid_cells : []).filter((_, idx) => idx % heatmapStride === 0).map((cell, idx) => (
                   <CircleMarker
                     key={`${cluster.cluster_id}-cell-${idx}`}
                     center={[cell.lat, cell.lon]}
@@ -649,6 +797,9 @@ export default function ResultAnalysisPage() {
             {(raState?.gt_points ?? []).map((point) => {
               const gtColor = gtColors[point.gt_id] ?? '#ef4444'
               const isFn = falseNegativeIds.has(point.gt_id)
+              const isOutOfZone = zoneGtIds !== null && !zoneGtIds.has(point.gt_id)
+              const markerOpacity = isOutOfZone ? 0.3 : 1
+              const markerFillOpacity = isOutOfZone ? 0.2 : isFn ? 0.15 : 0.92
               return (
                 <CircleMarker
                   key={point.gt_id}
@@ -656,8 +807,21 @@ export default function ResultAnalysisPage() {
                   radius={8}
                   pathOptions={
                     isFn
-                      ? { color: 'white', fillColor: gtColor, fillOpacity: 0.15, weight: 2.5, dashArray: '5 4' }
-                      : { color: 'white', fillColor: gtColor, fillOpacity: 0.92, weight: 2.5 }
+                      ? {
+                          color: 'white',
+                          fillColor: gtColor,
+                          fillOpacity: markerFillOpacity,
+                          opacity: markerOpacity,
+                          weight: 2.5,
+                          dashArray: '5 4',
+                        }
+                      : {
+                          color: 'white',
+                          fillColor: gtColor,
+                          fillOpacity: markerFillOpacity,
+                          opacity: markerOpacity,
+                          weight: 2.5,
+                        }
                   }
                 >
                   <Tooltip>
@@ -703,11 +867,33 @@ export default function ResultAnalysisPage() {
         </main>
       </div>
 
+      {test1 && (
+        <section className="score-panel test1-panel">
+          <div>
+            <div className="score-label">Test 1 — SAR Operational</div>
+            <div className="score-total">{(test1.total * 100).toFixed(1)}%</div>
+          </div>
+          <div className="score-grid">
+            <div className="score-item">
+              <span>Count ({test1.nCircles} circles / {test1.nExpected} expected)</span>
+              <strong>{(test1.sCount * 100).toFixed(1)}%</strong>
+            </div>
+            <div className="score-item">
+              <span>Area ({(test1.areaRatio * 100).toFixed(1)}% of zone)</span>
+              <strong>{(test1.sArea * 100).toFixed(1)}%</strong>
+            </div>
+          </div>
+          <div className="reliability-note">
+            Zone: {(test1.lassoArea / 1e6).toFixed(4)} km² &nbsp;|&nbsp; Circles: {(test1.circleArea / 1e6).toFixed(4)} km²
+          </div>
+        </section>
+      )}
+
       {evalResult && (
         <>
-          <section className="score-panel">
+          <section className="score-panel test2-panel">
             <div>
-              <div className="score-label">Total</div>
+              <div className="score-label">Test 2 — Research</div>
               <div className="score-total">{(evalResult.score.total * 100).toFixed(1)}%</div>
             </div>
             <div className="score-grid">
@@ -733,6 +919,12 @@ export default function ResultAnalysisPage() {
             </div>
           </section>
 
+          {combinedScore !== null && (
+            <section className="combined-score-panel">
+              <span className="combined-score-label">Combined Score (Test 1 + Test 2)</span>
+              <span className="combined-score-value">{(combinedScore * 100).toFixed(1)}%</span>
+            </section>
+          )}
           <Diagnostics result={evalResult} possibleMergeIds={possibleMergeIds} />
         </>
       )}

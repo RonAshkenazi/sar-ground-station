@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { getSessionState } from '../api/sessions'
 import type { SessionState } from '../types'
 
@@ -7,12 +7,19 @@ type SessionCtx = {
   setSession: (session: SessionState) => void
   refreshSession: () => Promise<SessionState | null>
   clearSession: () => void
+  lassoPolygon: [number, number][] | null
+  setLassoPolygon: (polygon: [number, number][] | null) => void
 }
 
 const SessionContext = createContext<SessionCtx | null>(null)
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [session, setSessionState] = useState<SessionState | null>(null)
+  const [lassoPolygon, setLassoPolygon] = useState<[number, number][] | null>(null)
+
+  useEffect(() => {
+    setLassoPolygon(null)
+  }, [session?.session_id])
 
   async function refreshSession() {
     if (!session?.session_id) return null
@@ -27,7 +34,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         session,
         setSession: setSessionState,
         refreshSession,
-        clearSession: () => setSessionState(null),
+        clearSession: () => {
+          setSessionState(null)
+          setLassoPolygon(null)
+        },
+        lassoPolygon,
+        setLassoPolygon,
       }}
     >
       {children}

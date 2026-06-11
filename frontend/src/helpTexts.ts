@@ -38,6 +38,10 @@ export const HELP = {
   w_distance: 'Weight of the Distance sub-score in the total (0-1).',
   w_count: 'Weight of the Count sub-score in the total (0-1).',
   w_radius: 'Weight of the Radius sub-score in the total (0-1).',
+  expected_emitters:
+    'Number of real-world targets (people/devices) you expect in the search zone. Used for Test 1 count score: penalty is proportional to how far the detected circle count deviates from this.',
+  circle_overlap_threshold:
+    "Minimum fraction of a circle's area that must fall inside the zone for it to count toward the Test 1 circle count (0.01–1.0). Default 0.20 = at least 20% of the circle must be inside the zone.",
   cluster_confidence:
     "Re-ID's self-assessment of this cluster's reliability, based on detection consistency and signal strength. High = strong, repeated detections. Low = sparse or weak signal.",
   cluster_type_static:

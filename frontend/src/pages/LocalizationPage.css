@@ -62,7 +62,7 @@
   border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 8px 10px;
-  max-width: 260px;
+  max-width: 220px;
   color: rgba(255, 255, 255, 0.92);
 }
 
@@ -73,11 +73,34 @@
 }
 
 .localization-right .layer-btn {
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.75);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  padding: 2px 10px;
+  cursor: pointer;
 }
 
 .localization-right .layer-btn.active {
+  background: rgba(31, 111, 235, 0.35);
+  border-color: rgba(31, 111, 235, 0.7);
   color: #fff;
+}
+
+.localization-right .lasso-btn {
+  color: #facc15;
+  background: transparent;
+  border: 1px solid rgba(250, 204, 21, 0.45);
+  border-radius: 4px;
+  padding: 2px 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.localization-right .lasso-btn.active {
+  background: rgba(250, 204, 21, 0.18);
+  border-color: #facc15;
+  color: #facc15;
 }
 
 .calibration-info {
@@ -261,4 +284,59 @@
   .localization-right {
     min-height: 520px;
   }
+}
+
+.map-ctrl-section {
+  width: 100%;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 2px;
+}
+
+.map-ctrl-pair {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+}
+
+.map-ctrl-label {
+  font-size: 0.73rem;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+  flex: 1;
+}
+
+.heatmap-stride-input {
+  width: 46px;
+  padding: 1px 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  color: inherit;
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.lasso-mode {
+  cursor: crosshair !important;
+}
+
+.lasso-mode .leaflet-grab,
+.lasso-mode .leaflet-crosshair {
+  cursor: crosshair !important;
+}
+
+.zone-badge {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #facc15;
+  background: rgba(250, 204, 21, 0.12);
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  border-radius: 4px;
+  padding: 2px 8px;
+  white-space: nowrap;
 }

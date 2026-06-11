@@ -32,6 +32,11 @@ export const resumeSavedSession = (savedId: string) =>
     method: 'POST',
   })
 
+export const deleteSavedSession = (savedId: string) =>
+  apiFetch<{ deleted: string }>(`/api/saved-sessions/${savedId}`, {
+    method: 'DELETE',
+  })
+
 export interface InventoryResult {
   raw_csvs: Array<{ filename: string; path: string }>
   enriched_artifacts: Array<{
@@ -375,6 +380,8 @@ export const runEvaluation = (
     w_distance?: number
     w_count?: number
     w_radius?: number
+    cluster_ids?: string[]
+    gt_ids?: string[]
   } = {},
 ) =>
   apiFetch<EvaluationResult>(`/api/sessions/${session_id}/result-analysis/evaluate`, {

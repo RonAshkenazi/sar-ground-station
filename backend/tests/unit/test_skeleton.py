@@ -1918,6 +1918,60 @@ def test_result_analysis_api_evaluate(tmp_path, monkeypatch) -> None:
     assert state_response.json()["last_evaluation"]["n_gt"] == 1
 
 
+def test_result_analysis_api_evaluate_filters_by_cluster_and_gt_ids(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "DATA"))
+    folder = tmp_path / "DATA" / "scan_ra_zone_test"
+    folder.mkdir(parents=True)
+    client = TestClient(create_app())
+    session_id = client.post("/api/sessions", json={"folder_id": "scan_ra_zone_test"}).json()["session_id"]
+
+    from app.modules.session_navigation.session_store import get_session
+
+    session = get_session(session_id)
+    session["current_localization_result"] = {
+        "cluster_results": [
+            {
+                "cluster_id": "c1",
+                "cluster_type": "dynamic",
+                "status": "success",
+                "primary_peak": {"lat": 32.0, "lon": 34.0, "value": 0.9},
+                "uncertainty_regions": [{"center_lat": 32.0, "center_lon": 34.0, "radius_m": 20.0}],
+                "sample_count": 5,
+            },
+            {
+                "cluster_id": "c2",
+                "cluster_type": "dynamic",
+                "status": "success",
+                "primary_peak": {"lat": 32.001, "lon": 34.001, "value": 0.8},
+                "uncertainty_regions": [{"center_lat": 32.001, "center_lon": 34.001, "radius_m": 15.0}],
+                "sample_count": 7,
+            },
+        ]
+    }
+
+    gt1 = client.post(
+        f"/api/sessions/{session_id}/result-analysis/ground-truth",
+        json={"lat": 32.0, "lon": 34.0, "label": "Device A"},
+    ).json()
+    gt2 = client.post(
+        f"/api/sessions/{session_id}/result-analysis/ground-truth",
+        json={"lat": 32.001, "lon": 34.001, "label": "Device B"},
+    ).json()
+
+    response = client.post(
+        f"/api/sessions/{session_id}/result-analysis/evaluate",
+        json={"cluster_ids": ["c2"], "gt_ids": [gt2["gt_id"]]},
+    )
+
+    assert gt1["gt_id"] != gt2["gt_id"]
+    assert response.status_code == 200
+    body = response.json()
+    assert body["n_predictions"] == 1
+    assert body["n_gt"] == 1
+    assert body["matches"][0]["primary_cluster_id"] == "c2"
+    assert body["matches"][0]["gt_id"] == gt2["gt_id"]
+
+
 def test_rerun_reid_stage_accepted(tmp_path, monkeypatch) -> None:
     """Rerun endpoint accepts stage='reid' without 422."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))

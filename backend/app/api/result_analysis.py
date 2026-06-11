@@ -28,6 +28,8 @@ class EvaluateRequest(BaseModel):
     w_distance: float = 0.30
     w_count: float = 0.20
     w_radius: float = 0.10
+    cluster_ids: list[str] | None = None
+    gt_ids: list[str] | None = None
 
 
 def _get_session_or_404(session_id: str) -> dict:
@@ -114,8 +116,17 @@ def run_evaluation(session_id: str, body: EvaluateRequest) -> dict:
     if not gt_points:
         raise HTTPException(status_code=422, detail="No GT points defined. Add at least one GT point first.")
 
+    predictions = extract_predictions_from_localization_result(loc_result)
+    if body.cluster_ids is not None:
+        allowed = set(body.cluster_ids)
+        predictions = [prediction for prediction in predictions if prediction["cluster_id"] in allowed]
+
+    if body.gt_ids is not None:
+        allowed = set(body.gt_ids)
+        gt_points = [point for point in gt_points if point["gt_id"] in allowed]
+
     result = evaluate(
-        predictions=extract_predictions_from_localization_result(loc_result),
+        predictions=predictions,
         gt_points=gt_points,
         ratio_gate=body.ratio_gate,
         max_match_dist_m=body.max_match_dist_m,

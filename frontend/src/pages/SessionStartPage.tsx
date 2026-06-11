@@ -2,6 +2,7 @@ import { ChangeEvent, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   createSession,
+  deleteSavedSession,
   getSavedSessions,
   getScanFolders,
   getSessionState,
@@ -27,6 +28,8 @@ export default function SessionStartPage() {
   const [creating, setCreating] = useState(false)
   const [savedSessions, setSavedSessions] = useState<SavedSessionListItem[]>([])
   const [resumingId, setResumingId] = useState('')
+  const [deletingId, setDeletingId] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState('')
 
   useEffect(() => {
     getScanFolders()
@@ -73,6 +76,20 @@ export default function SessionStartPage() {
 
   function handleModeOverride(mode: SelectableMode) {
     setModeOverride(mode)
+  }
+
+  async function handleDelete(savedId: string) {
+    setConfirmDeleteId('')
+    setDeletingId(savedId)
+    setError(null)
+    try {
+      await deleteSavedSession(savedId)
+      setSavedSessions((prev) => prev.filter((s) => s.saved_id !== savedId))
+    } catch (err: unknown) {
+      setError(String(err))
+    } finally {
+      setDeletingId('')
+    }
   }
 
   async function handleResume(savedId: string) {
@@ -165,6 +182,7 @@ export default function SessionStartPage() {
                       <th>Date</th>
                       <th>Mode</th>
                       <th></th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -176,11 +194,39 @@ export default function SessionStartPage() {
                         <td>
                           <button
                             className="btn-secondary"
-                            disabled={!!resumingId}
+                            disabled={!!resumingId || !!deletingId}
                             onClick={() => handleResume(saved.saved_id)}
                           >
                             {resumingId === saved.saved_id ? 'Resuming...' : 'Resume'}
                           </button>
+                        </td>
+                        <td>
+                          {confirmDeleteId === saved.saved_id ? (
+                            <span className="delete-confirm-row">
+                              <span className="delete-confirm-label">Delete?</span>
+                              <button
+                                className="btn-danger"
+                                disabled={!!deletingId}
+                                onClick={() => handleDelete(saved.saved_id)}
+                              >
+                                {deletingId === saved.saved_id ? 'Deleting...' : 'Yes'}
+                              </button>
+                              <button
+                                className="btn-secondary"
+                                onClick={() => setConfirmDeleteId('')}
+                              >
+                                No
+                              </button>
+                            </span>
+                          ) : (
+                            <button
+                              className="btn-danger"
+                              disabled={!!resumingId || !!deletingId}
+                              onClick={() => setConfirmDeleteId(saved.saved_id)}
+                            >
+                              Delete
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -209,5 +255,10 @@ export default function SessionStartPage() {
 function formatSavedAt(value: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
+  const dd = String(date.getDate()).padStart(2, '0')
+  const mm = String(date.getMonth() + 1).padStart(2, '0')
+  const yyyy = date.getFullYear()
+  const hh = String(date.getHours()).padStart(2, '0')
+  const min = String(date.getMinutes()).padStart(2, '0')
+  return `${dd}/${mm}/${yyyy} ${hh}:${min}`
 }

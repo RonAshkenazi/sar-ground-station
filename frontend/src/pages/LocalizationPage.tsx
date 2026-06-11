@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Circle, CircleMarker, MapContainer, TileLayer, Tooltip, useMap } from 'react-leaflet'
+import { Circle, CircleMarker, MapContainer, Polygon, Rectangle, TileLayer, Tooltip, useMap } from 'react-leaflet'
 import {
   getExecution,
   getInventory,
@@ -10,9 +10,11 @@ import {
   type LocalizationRunResult,
 } from '../api/sessions'
 import HelpTip from '../components/HelpTip'
+import LassoTool from '../components/LassoTool'
 import { HELP } from '../helpTexts'
 import { useSession } from '../state/SessionContext'
 import type { SessionState } from '../types'
+import { pointInPolygon } from '../utils/geoUtils'
 import './LocalizationPage.css'
 
 type MapLayer = 'satellite' | 'osm'
@@ -20,7 +22,7 @@ type MapLayer = 'satellite' | 'osm'
 const CLUSTER_COLORS = ['#1f6feb', '#15803d', '#b45309', '#b91c1c', '#7c3aed', '#0f766e']
 
 export default function LocalizationPage() {
-  const { session, refreshSession } = useSession()
+  const { session, refreshSession, lassoPolygon, setLassoPolygon } = useSession()
   const [inventory, setInventory] = useState<InventoryResult | null>(null)
   const [sessionState, setSessionState] = useState<SessionState | null>(null)
   const [selectedReid, setSelectedReid] = useState('')
@@ -29,14 +31,17 @@ export default function LocalizationPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [mapLayer, setMapLayer] = useState<MapLayer>('satellite')
-  const [showHeatmap, setShowHeatmap] = useState(true)
-  const [showUncertaintyRadii, setShowUncertaintyRadii] = useState(true)
-  const [showPeaks, setShowPeaks] = useState(true)
+  const [showHeatmap, setShowHeatmap] = useState(false)
+  const [showUncertaintyRadii, setShowUncertaintyRadii] = useState(false)
+  const [showPeaks, setShowPeaks] = useState(false)
+  const [heatmapStride, setHeatmapStride] = useState(1)
   const [showStaticClusters, setShowStaticClusters] = useState(true)
   const [showNoiseClusters, setShowNoiseClusters] = useState(true)
   const [hiddenClusters, setHiddenClusters] = useState<Set<string>>(new Set())
   const [settingsOpen, setSettingsOpen] = useState(true)
+  const [lassoActive, setLassoActive] = useState(false)
   const [locSettings, setLocSettings] = useState({
+    grid_resolution_m: 2.0,
     dynamic_sigma_alpha: 0.05,
     confidence_cutoff: 0.75,
     uncertainty_participation_floor: 0.8,
@@ -114,10 +119,15 @@ export default function LocalizationPage() {
         if (hiddenClusters.has(cluster.cluster_id)) return false
         if (!showStaticClusters && cluster.cluster_type === 'static') return false
         if (!showNoiseClusters && cluster.cluster_type === 'noise') return false
+        if (lassoPolygon) {
+          if (cluster.status !== 'success' || !cluster.primary_peak) return false
+          if (!pointInPolygon(cluster.primary_peak.lat, cluster.primary_peak.lon, lassoPolygon)) return false
+        }
         return true
       }),
-    [result, hiddenClusters, showStaticClusters, showNoiseClusters],
+    [result, hiddenClusters, showStaticClusters, showNoiseClusters, lassoPolygon],
   )
+  const zoneClusterCount = lassoPolygon ? visibleClusters.length : null
 
   async function handleRun() {
     if (!session?.session_id || !selectedReid) return
@@ -128,6 +138,7 @@ export default function LocalizationPage() {
       const started = await runLocalization(session.session_id, {
         reid_csv_filename: selectedReid,
         bounds_mode: 'auto_track_plus_buffer',
+        grid_resolution_m: locSettings.grid_resolution_m,
         dynamic_sigma_alpha: locSettings.dynamic_sigma_alpha,
         confidence_cutoff: locSettings.confidence_cutoff,
         uncertainty_participation_floor: locSettings.uncertainty_participation_floor,
@@ -205,6 +216,23 @@ export default function LocalizationPage() {
             </button>
             {settingsOpen && (
               <div className="localization-settings-grid">
+                <label className="loc-param-row">
+                  <span>
+                    grid_resolution_m <HelpTip text={HELP.loc_grid_resolution_m} />
+                  </span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0.5"
+                    value={locSettings.grid_resolution_m}
+                    onChange={(event) =>
+                      setLocSettings((previous) => ({
+                        ...previous,
+                        grid_resolution_m: Math.max(0.5, Number(event.target.value)),
+                      }))
+                    }
+                  />
+                </label>
                 <label className="loc-param-row">
                   <span>
                     dynamic_sigma_alpha <HelpTip text={HELP.loc_dynamic_sigma_alpha} />
@@ -380,22 +408,54 @@ export default function LocalizationPage() {
             </label>
           </div>
           <div className="map-controls">
+            <span className="map-ctrl-section">Layers</span>
             <label className="map-control-check">
               <input type="checkbox" checked={showHeatmap} onChange={(e) => setShowHeatmap(e.target.checked)} />
-              Heatmap <HelpTip text={HELP.heatmap} left />
+              Heatmap — signal strength grid <HelpTip text={HELP.heatmap} left />
             </label>
             <label className="map-control-check">
-              <input
-                type="checkbox"
-                checked={showUncertaintyRadii}
-                onChange={(e) => setShowUncertaintyRadii(e.target.checked)}
-              />
-              Radii <HelpTip text={HELP.radii} left />
+              <input type="checkbox" checked={showUncertaintyRadii} onChange={(e) => setShowUncertaintyRadii(e.target.checked)} />
+              Radii — uncertainty circles <HelpTip text={HELP.radii} left />
             </label>
             <label className="map-control-check">
               <input type="checkbox" checked={showPeaks} onChange={(e) => setShowPeaks(e.target.checked)} />
-              Peaks <HelpTip text={HELP.peaks} left />
+              Peaks — estimated positions <HelpTip text={HELP.peaks} left />
             </label>
+            <div className="map-controls-divider" />
+            <span className="map-ctrl-section">Heatmap settings</span>
+            <div className="map-ctrl-pair">
+              <span className="map-ctrl-label">Dot stride</span>
+              <input
+                type="number" min={1} max={20} step={1}
+                value={heatmapStride}
+                onChange={(e) => setHeatmapStride(Math.min(20, Math.max(1, Number(e.target.value))))}
+                className="heatmap-stride-input"
+                title="Show every Nth dot. 1 = all dots (~2 m apart at default grid). 5 = every 5th dot (~10 m apart)."
+              />
+            </div>
+            <div className="map-controls-divider" />
+            {!lassoPolygon ? (
+              <button
+                className={`lasso-btn${lassoActive ? ' active' : ''}`}
+                onClick={() => setLassoActive((value) => !value)}
+                title="Draw a freehand zone to filter clusters"
+              >
+                {lassoActive ? 'Drawing...' : 'Select Zone'}
+              </button>
+            ) : (
+              <>
+                <span className="zone-badge">{zoneClusterCount} clusters in zone</span>
+                <button
+                  className="layer-btn"
+                  onClick={() => {
+                    setLassoPolygon(null)
+                    setLassoActive(false)
+                  }}
+                >
+                  Clear Zone
+                </button>
+              </>
+            )}
             <div className="map-controls-divider" />
             <div className="layer-toggle">
               <button className={`layer-btn${mapLayer === 'satellite' ? ' active' : ''}`} onClick={() => setMapLayer('satellite')}>
@@ -407,8 +467,8 @@ export default function LocalizationPage() {
             </div>
           </div>
 
-          <MapContainer center={mapCenter} zoom={15} maxZoom={23} className="localization-map">
-            {result && <SetViewOnResult center={mapCenter} zoom={16} />}
+          <MapContainer center={mapCenter} zoom={15} maxZoom={23} className={`localization-map${lassoActive ? ' lasso-mode' : ''}`}>
+            {result && <FitBoundsOnResult bounds={result.bounds} />}
             {mapLayer === 'satellite' ? (
               <TileLayer
                 key="satellite"
@@ -430,7 +490,7 @@ export default function LocalizationPage() {
             {showHeatmap &&
               visibleClusters.flatMap((cluster) =>
                 cluster.status === 'success'
-                  ? cluster.grid_cells.map((cell, index) => (
+                  ? cluster.grid_cells.filter((_, index) => index % heatmapStride === 0).map((cell, index) => (
                       <CircleMarker
                         key={`${cluster.cluster_id}-cell-${index}`}
                         center={[cell.lat, cell.lon]}
@@ -478,6 +538,35 @@ export default function LocalizationPage() {
                   </CircleMarker>
                 ) : null,
               )}
+            {result && (
+              <Rectangle
+                bounds={[[result.bounds.lat_min, result.bounds.lon_min], [result.bounds.lat_max, result.bounds.lon_max]]}
+                pathOptions={{ color: '#94a3b8', weight: 1.5, dashArray: '6 4', fillOpacity: 0, opacity: 0.7 }}
+              />
+            )}
+            {lassoPolygon && (
+              <Polygon
+                positions={lassoPolygon}
+                pathOptions={{
+                  color: '#facc15',
+                  weight: 2,
+                  dashArray: '8 5',
+                  fillOpacity: 0.06,
+                  opacity: 0.9,
+                }}
+              />
+            )}
+            <LassoTool
+              active={lassoActive}
+              onComplete={(polygon) => {
+                setLassoPolygon(polygon)
+                setLassoActive(false)
+                setShowHeatmap(true)
+                setShowUncertaintyRadii(true)
+                setShowPeaks(true)
+              }}
+              onCancel={() => setLassoActive(false)}
+            />
           </MapContainer>
         </div>
       </div>
@@ -485,11 +574,14 @@ export default function LocalizationPage() {
   )
 }
 
-function SetViewOnResult({ center, zoom }: { center: [number, number]; zoom: number }) {
+function FitBoundsOnResult({ bounds }: { bounds: { lat_min: number; lat_max: number; lon_min: number; lon_max: number } }) {
   const map = useMap()
   useEffect(() => {
-    map.flyTo(center, zoom)
-  }, [center[0], center[1], map, zoom])
+    map.fitBounds(
+      [[bounds.lat_min, bounds.lon_min], [bounds.lat_max, bounds.lon_max]],
+      { padding: [40, 40], maxZoom: 19 },
+    )
+  }, [bounds.lat_min, bounds.lat_max, bounds.lon_min, bounds.lon_max, map])
   return null
 }
 

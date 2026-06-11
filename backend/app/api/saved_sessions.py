@@ -87,6 +87,18 @@ def list_saved_sessions() -> list[dict]:
     return sorted(saves, key=lambda item: item["saved_at_utc"], reverse=True)
 
 
+@router.delete("/saved-sessions/{saved_id}")
+def delete_saved_session(saved_id: str) -> dict:
+    save_dir = _find_save_dir(saved_id)
+    if save_dir is None:
+        raise HTTPException(status_code=404, detail="Saved session not found")
+    shutil.rmtree(save_dir)
+    parent = save_dir.parent
+    if parent.exists() and not any(parent.iterdir()):
+        parent.rmdir()
+    return {"deleted": saved_id}
+
+
 @router.post("/saved-sessions/{saved_id}/resume")
 def resume_saved_session(saved_id: str) -> dict:
     from app.modules.session_navigation.session_store import create_session
