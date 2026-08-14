@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import math
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,9 @@ _LOC_08_CONFIDENCE_CUTOFF: float = 0.75  # FD-L2: legacy vis_thresh; operator-tu
 _LOC_UNCERTAINTY_PARTICIPATION_FLOOR: float = 0.80  # min posterior for a cell to enter spread calc
 _LOC_UNCERTAINTY_ALPHA: float = 1.5  # radius = alpha * weighted_sigma; needs GT calibration
 _LOC_13_MIN_SAMPLES_PER_CLUSTER: int = 3
+_LOC_14_MIN_TIME_GAP_SEC: float = 30.0
+_LOC_15_MIN_BASELINE_M: float = 5.0
+_LOC_16_MAX_UNCERTAINTY_RADIUS_M: float = 35.0
 _LOC_02_SEARCH_AREA_BUFFER_M: float = 20.0
 _LOC_RANSAC_ITERATIONS: int = 100
 _LOC_RANSAC_INLIER_THRESHOLD_DB: float = 10.0
@@ -32,6 +36,9 @@ def run_localization(
     confidence_cutoff: float = _LOC_08_CONFIDENCE_CUTOFF,
     uncertainty_participation_floor: float = _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
     uncertainty_alpha: float = _LOC_UNCERTAINTY_ALPHA,
+    min_time_gap_sec: float = _LOC_14_MIN_TIME_GAP_SEC,
+    min_baseline_m: float = _LOC_15_MIN_BASELINE_M,
+    max_uncertainty_radius_m: float = _LOC_16_MAX_UNCERTAINTY_RADIUS_M,
 ) -> dict[str, Any]:
     rows = _load_rows(reid_csv_path)
     _validate_calibration(calibration)
@@ -75,6 +82,27 @@ def run_localization(
             cluster_results.append(_failed_cluster(cluster_id, cluster_type_by_id[cluster_id], len(cluster_rows), warning))
             continue
 
+        time_gap_sec, baseline_m = _movement_stats(cluster_rows)
+        if time_gap_sec < min_time_gap_sec or baseline_m < min_baseline_m:
+            warning = (
+                f"Cluster {cluster_id} insufficient movement "
+                f"(time={time_gap_sec:.1f}s, need >={min_time_gap_sec:.0f}s; "
+                f"baseline={baseline_m:.1f}m, need >={min_baseline_m:.0f}m)"
+            )
+            run_warnings.append(warning)
+            cluster_results.append(
+                _failed_cluster(
+                    cluster_id,
+                    cluster_type_by_id[cluster_id],
+                    len(cluster_rows),
+                    warning,
+                    failure_reason="insufficient_movement",
+                    time_gap_sec=time_gap_sec,
+                    baseline_m=baseline_m,
+                )
+            )
+            continue
+
         cleaned_rows, ransac_warning = _ransac_filter_rows(cluster_rows, calibration)
         if ransac_warning:
             run_warnings.append(f"Cluster {cluster_id}: {ransac_warning}")
@@ -91,6 +119,22 @@ def run_localization(
             uncertainty_participation_floor=uncertainty_participation_floor,
             uncertainty_alpha=uncertainty_alpha,
         )
+        if result["status"] == "success" and result["uncertainty_regions"]:
+            radius_m = float(result["uncertainty_regions"][0]["radius_m"])
+            if radius_m > max_uncertainty_radius_m:
+                warning = (
+                    f"Cluster {cluster_id} uncertainty radius too large "
+                    f"({radius_m:.1f}m, need <={max_uncertainty_radius_m:.0f}m)"
+                )
+                run_warnings.append(warning)
+                result = _failed_cluster(
+                    cluster_id,
+                    cluster_type_by_id[cluster_id],
+                    len(cleaned_rows),
+                    warning,
+                    failure_reason="uncertainty_radius_too_large",
+                    radius_m=radius_m,
+                )
         cluster_results.append(result)
 
     successful = sum(1 for result in cluster_results if result["status"] == "success")
@@ -280,7 +324,8 @@ def _localize_cluster(
         warnings.append("Zero score map - no usable contributions")
 
     peak_indices = _find_peaks(posterior, shape, confidence_cutoff)
-    peaks = [{"lat": cells[index][0], "lon": cells[index][1], "value": posterior[index]} for index in peak_indices[:3]]
+    candidates = [{"lat": cells[index][0], "lon": cells[index][1], "value": posterior[index]} for index in peak_indices]
+    peaks = _deduplicate_peaks(candidates, cells, posterior, uncertainty_participation_floor, shape)[:3]
     if not peaks and posterior:
         index = max(range(len(posterior)), key=lambda item: posterior[item])
         peaks = [{"lat": cells[index][0], "lon": cells[index][1], "value": posterior[index]}]
@@ -337,6 +382,27 @@ def _find_peaks(values: list[float], shape: tuple[int, int], confidence_cutoff: 
             if all(current > neighbour for neighbour in neighbours) and current >= confidence_cutoff:
                 peaks.append(index)
     return sorted(peaks, key=lambda item: values[item], reverse=True)
+
+
+def _deduplicate_peaks(
+    candidates: list[dict[str, float]],
+    cells: list[tuple[float, float]],
+    posterior: list[float],
+    participation_floor: float,
+    shape: tuple[int, int] | None,
+) -> list[dict[str, float]]:
+    kept: list[dict[str, float]] = []
+    covered_indices: set[int] = set()
+    for peak in candidates:
+        peak_index = _cell_index_for_peak(peak, cells)
+        if peak_index is not None and peak_index in covered_indices:
+            continue
+        component = _peak_participating_indices(peak, cells, posterior, participation_floor, shape)
+        if peak_index is not None:
+            component = component | {peak_index}
+        covered_indices |= component
+        kept.append(peak)
+    return kept
 
 
 def _uncertainty_region(
@@ -424,8 +490,50 @@ def _merge_regions(regions: list[dict[str, float]]) -> list[dict[str, float]]:
     return merged[:3]
 
 
-def _failed_cluster(cluster_id: str, cluster_type: str, sample_count: int, reason: str) -> dict[str, Any]:
-    return {
+def _movement_stats(rows: list[dict]) -> tuple[float, float]:
+    times = [_parse_time(row.get("timestamp_utc")) for row in rows]
+    valid_times = [time for time in times if time is not None]
+    time_gap_sec = max(valid_times) - min(valid_times) if len(valid_times) >= 2 else 0.0
+
+    points: list[tuple[float, float]] = []
+    for row in rows:
+        lat = _safe_float(row.get("gps_lat"))
+        lon = _safe_float(row.get("gps_lon"))
+        if lat is not None and lon is not None:
+            points.append((lat, lon))
+
+    baseline_m = 0.0
+    for left_index, (lat1, lon1) in enumerate(points):
+        for lat2, lon2 in points[left_index + 1 :]:
+            baseline_m = max(baseline_m, _haversine_m(lat1, lon1, lat2, lon2))
+    return time_gap_sec, baseline_m
+
+
+def _parse_time(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(str(value))
+    except ValueError:
+        pass
+    try:
+        return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _failed_cluster(
+    cluster_id: str,
+    cluster_type: str,
+    sample_count: int,
+    reason: str,
+    *,
+    failure_reason: str = "insufficient_samples",
+    time_gap_sec: float | None = None,
+    baseline_m: float | None = None,
+    radius_m: float | None = None,
+) -> dict[str, Any]:
+    result = {
         "cluster_id": str(cluster_id),
         "cluster_type": str(cluster_type),
         "status": "failed",
@@ -435,8 +543,15 @@ def _failed_cluster(cluster_id: str, cluster_type: str, sample_count: int, reaso
         "uncertainty_regions": [],
         "grid_cells": [],
         "warnings": [reason],
-        "failure_reason": "insufficient_samples",
+        "failure_reason": failure_reason,
     }
+    if time_gap_sec is not None:
+        result["time_gap_sec"] = time_gap_sec
+    if baseline_m is not None:
+        result["baseline_m"] = baseline_m
+    if radius_m is not None:
+        result["radius_m"] = radius_m
+    return result
 
 
 def _safe_float(value: object) -> float | None:

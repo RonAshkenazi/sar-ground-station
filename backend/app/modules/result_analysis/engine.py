@@ -14,6 +14,8 @@ _RA_W_CONTAINMENT: float = 0.40
 _RA_W_DISTANCE: float = 0.30
 _RA_W_COUNT: float = 0.20
 _RA_W_RADIUS: float = 0.10
+_RA_MIN_RELIABLE_SAMPLES: int = 10
+_RA_MIN_RELIABILITY_THRESHOLD: float = 0.30
 _GATE_INF: float = 1e9
 
 
@@ -36,8 +38,32 @@ def evaluate(
     w_distance: float = _RA_W_DISTANCE,
     w_count: float = _RA_W_COUNT,
     w_radius: float = _RA_W_RADIUS,
+    min_reliable_samples: int = _RA_MIN_RELIABLE_SAMPLES,
+    min_reliability_threshold: float = _RA_MIN_RELIABILITY_THRESHOLD,
 ) -> dict:
-    preds = [pred for pred in predictions if pred.get("lat") is not None and pred.get("lon") is not None]
+    located_preds = [pred for pred in predictions if pred.get("lat") is not None and pred.get("lon") is not None]
+    reliability_by_cluster_id = {
+        str(pred["cluster_id"]): _cluster_reliability(
+            pred.get("num_samples"),
+            min_reliable_samples,
+        )
+        for pred in located_preds
+    }
+    excluded = [
+        {
+            "cluster_id": pred["cluster_id"],
+            "num_samples": pred.get("num_samples"),
+            "radius_m": pred.get("radius_m"),
+            "reliability": round(reliability_by_cluster_id[str(pred["cluster_id"])], 4),
+        }
+        for pred in located_preds
+        if reliability_by_cluster_id[str(pred["cluster_id"])] < min_reliability_threshold
+    ]
+    preds = [
+        pred
+        for pred in located_preds
+        if reliability_by_cluster_id[str(pred["cluster_id"])] >= min_reliability_threshold
+    ]
     gts = list(gt_points)
     n_pred = len(preds)
     n_gt = len(gts)
@@ -60,22 +86,66 @@ def evaluate(
 
         nearest_i = sorted_clusters[0]
         if n_pred == 1:
-            cost[nearest_i][j] = d1
+            cost[nearest_i][j] = d1 / _reliability_for_pred(preds[nearest_i], reliability_by_cluster_id)
             continue
 
         d2 = dist_m[sorted_clusters[1]][j]
         ratio = (d2 / d1) if d1 > 0 else float("inf")
         if ratio >= ratio_gate:
-            cost[nearest_i][j] = d1
+            for candidate_i in sorted_clusters:
+                if dist_m[candidate_i][j] <= max_match_dist_m:
+                    cost[candidate_i][j] = dist_m[candidate_i][j] / _reliability_for_pred(
+                        preds[candidate_i],
+                        reliability_by_cluster_id,
+                    )
         else:
             pack_ambiguous_gt_indices.add(j)
 
-    primary_pairs = _linear_sum_assignment(cost)
-    matched_pred_idx = {i for i, _ in primary_pairs}
-    matched_gt_idx = {j for _, j in primary_pairs}
+    stage1_pairs = _linear_sum_assignment(cost)
+    stage1_pairs_set = set(stage1_pairs)
+    matched_pred_idx = {i for i, _ in stage1_pairs}
+    matched_gt_idx = {j for _, j in stage1_pairs}
+
+    competed_away_gt_indices = {
+        j
+        for j in range(n_gt)
+        if j not in matched_gt_idx
+        and j not in far_fn_gt_indices
+        and j not in pack_ambiguous_gt_indices
+        and n_pred > 0
+    }
+
+    stage1_leftover_pred_indices = [i for i in range(n_pred) if i not in matched_pred_idx]
+    stage2_candidate_indices_by_gt = {
+        j: _ratio_window_candidate_indices(j, dist_m, ratio_gate, stage1_leftover_pred_indices)
+        for j in sorted(pack_ambiguous_gt_indices)
+    }
+    ambiguous_gt_list = [
+        j
+        for j in sorted(pack_ambiguous_gt_indices)
+        if len(stage2_candidate_indices_by_gt[j]) == 1
+    ]
+    cost2 = [[_GATE_INF] * len(ambiguous_gt_list) for _ in stage1_leftover_pred_indices]
+    if stage1_leftover_pred_indices and ambiguous_gt_list:
+        for row, i in enumerate(stage1_leftover_pred_indices):
+            for col, j in enumerate(ambiguous_gt_list):
+                if i in stage2_candidate_indices_by_gt[j] and dist_m[i][j] <= max_match_dist_m:
+                    cost2[row][col] = dist_m[i][j] / _reliability_for_pred(
+                        preds[i],
+                        reliability_by_cluster_id,
+                    )
+    stage2_pairs = [
+        (stage1_leftover_pred_indices[row], ambiguous_gt_list[col])
+        for row, col in _linear_sum_assignment(cost2)
+    ]
+    for i, j in stage2_pairs:
+        cost[i][j] = dist_m[i][j] / _reliability_for_pred(preds[i], reliability_by_cluster_id)
+    all_pairs = stage1_pairs + stage2_pairs
+    matched_pred_idx |= {i for i, _ in stage2_pairs}
+    matched_gt_idx |= {j for _, j in stage2_pairs}
 
     matches = []
-    for i, j in primary_pairs:
+    for i, j in all_pairs:
         pred = preds[i]
         gt = gts[j]
         raw_radius = pred.get("radius_m")
@@ -102,28 +172,32 @@ def evaluate(
                 "uncertainty_radius_m": raw_radius,
                 "distance_m": distance,
                 "covered": raw_radius is not None and float(raw_radius) > 0 and distance <= float(raw_radius),
-                "association_cost": distance,
+                "association_cost": cost[i][j],
                 "dominance_margin": dominance_margin,
-                "association_status": "clear_match",
+                "association_status": "clear_match" if (i, j) in stage1_pairs_set else "resolved_after_narrowing",
                 "secondary_candidates": [],
             }
         )
 
-    competed_away_gt_indices = {
-        j
-        for j in range(n_gt)
-        if j not in matched_gt_idx
-        and j not in far_fn_gt_indices
-        and j not in pack_ambiguous_gt_indices
-        and n_pred > 0
-    }
-    ambiguous_gt_indices = (pack_ambiguous_gt_indices | competed_away_gt_indices) - matched_gt_idx - far_fn_gt_indices
+    final_leftover_pred_indices = [i for i in range(n_pred) if i not in matched_pred_idx]
+    still_ambiguous_gt_indices = pack_ambiguous_gt_indices - {j for _, j in stage2_pairs}
+    ambiguous_gt_indices = (still_ambiguous_gt_indices | competed_away_gt_indices) - matched_gt_idx - far_fn_gt_indices
     ambiguous_gts = []
     for j in sorted(ambiguous_gt_indices):
         gt = gts[j]
         sorted_clusters = sorted(range(n_pred), key=lambda i: dist_m[i][j])
         nearest_i = sorted_clusters[0]
         d1 = dist_m[nearest_i][j]
+        if j in still_ambiguous_gt_indices:
+            competing_indices = _ratio_window_candidate_indices(
+                j,
+                dist_m,
+                ratio_gate,
+                final_leftover_pred_indices,
+                max_match_dist_m,
+            )
+        else:
+            competing_indices = [i for i in sorted_clusters if dist_m[i][j] <= d1 * ratio_gate]
         ambiguous_gts.append(
             {
                 "gt_id": gt["gt_id"],
@@ -133,7 +207,7 @@ def evaluate(
                 "nearest_cluster_id": preds[nearest_i]["cluster_id"],
                 "nearest_dist_m": round(d1, 2),
                 "competing_cluster_ids": [
-                    preds[i]["cluster_id"] for i in sorted_clusters if dist_m[i][j] <= d1 * ratio_gate
+                    preds[i]["cluster_id"] for i in competing_indices
                 ],
             }
         )
@@ -181,7 +255,7 @@ def evaluate(
             )
 
     errors = [match["distance_m"] for match in matches]
-    all_radii = [float(pred.get("radius_m") or 0.0) for pred in preds]
+    all_radii = [float(pred.get("radius_m") or 0.0) for pred in located_preds]
     coverage = sum(1 for match in matches if match["covered"]) / max(len(matches), 1) if matches else 0.0
     median_error = statistics.median(errors) if errors else None
     p90_error = sorted(errors)[max(0, int(math.ceil(0.9 * len(errors))) - 1)] if errors else None
@@ -213,6 +287,7 @@ def evaluate(
         "ambiguous_gts": ambiguous_gts,
         "duplicates": duplicates,
         "possible_merges": possible_merges,
+        "excluded_low_reliability": excluded,
         "metrics": {
             "recall": round(recall, 4),
             "precision": round(precision, 4),
@@ -238,6 +313,8 @@ def evaluate(
             "w_distance": w_distance,
             "w_count": w_count,
             "w_radius": w_radius,
+            "min_reliable_samples": min_reliable_samples,
+            "min_reliability_threshold": min_reliability_threshold,
         },
         "n_predictions": n_pred,
         "n_gt": n_gt,
@@ -246,6 +323,46 @@ def evaluate(
             "The 'covered' field and radius-based scoring should be treated as indicative only."
         ),
     }
+
+
+def _ratio_window_candidate_indices(
+    gt_index: int,
+    dist_m: list[list[float]],
+    ratio_gate: float,
+    allowed_pred_indices: list[int] | None = None,
+    max_match_dist_m: float | None = None,
+) -> list[int]:
+    if not dist_m:
+        return []
+    n_pred = len(dist_m)
+    sorted_clusters = sorted(range(n_pred), key=lambda i: dist_m[i][gt_index])
+    d1 = dist_m[sorted_clusters[0]][gt_index]
+    allowed = set(range(n_pred)) if allowed_pred_indices is None else set(allowed_pred_indices)
+    return [
+        i
+        for i in sorted_clusters
+        if i in allowed and dist_m[i][gt_index] <= d1 * ratio_gate
+        and (max_match_dist_m is None or dist_m[i][gt_index] <= max_match_dist_m)
+    ]
+
+
+def _cluster_reliability(
+    num_samples: object,
+    min_reliable_samples: int,
+) -> float:
+    sample_count = _safe_float(num_samples) or 0.0
+    return 1.0 if min_reliable_samples <= 0 else min(1.0, sample_count / min_reliable_samples)
+
+
+def _reliability_for_pred(pred: dict, reliability_by_cluster_id: dict[str, float]) -> float:
+    return max(reliability_by_cluster_id[str(pred["cluster_id"])], 1e-9)
+
+
+def _safe_float(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def extract_predictions_from_localization_result(loc_result: dict) -> list[dict]:

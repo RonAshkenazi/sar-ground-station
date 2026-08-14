@@ -32,6 +32,9 @@ class LocalizationRunRequest(BaseModel):
     confidence_cutoff: float = _LOC_08_CONFIDENCE_CUTOFF
     uncertainty_participation_floor: float = _LOC_UNCERTAINTY_PARTICIPATION_FLOOR
     uncertainty_alpha: float = _LOC_UNCERTAINTY_ALPHA
+    min_time_gap_sec: float | None = None
+    min_baseline_m: float | None = None
+    max_uncertainty_radius_m: float | None = None
 
 
 @router.post("/sessions/{session_id}/localization/run")
@@ -81,6 +84,9 @@ def run_localization_endpoint(
         body.confidence_cutoff,
         body.uncertainty_participation_floor,
         body.uncertainty_alpha,
+        body.min_time_gap_sec,
+        body.min_baseline_m,
+        body.max_uncertainty_radius_m,
     )
     return {"execution_id": execution_id, "status": "pending"}
 
@@ -98,6 +104,9 @@ def _run_localization_task(
     confidence_cutoff: float,
     uncertainty_participation_floor: float = _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
     uncertainty_alpha: float = _LOC_UNCERTAINTY_ALPHA,
+    min_time_gap_sec: float | None = None,
+    min_baseline_m: float | None = None,
+    max_uncertainty_radius_m: float | None = None,
 ) -> None:
     from app.api.executions import update_execution
     from app.modules.localization.engine import run_localization
@@ -105,18 +114,26 @@ def _run_localization_task(
 
     update_execution(execution_id, status="running")
     try:
-        result = run_localization(
-            reid_csv_path=reid_csv_path,
-            calibration=calibration_parameters,
-            bounds_mode=bounds_mode,
-            buffer_m=buffer_m,
-            manual_bounds=manual_bounds,
-            grid_resolution_m=grid_resolution_m,
-            dynamic_sigma_alpha=dynamic_sigma_alpha,
-            confidence_cutoff=confidence_cutoff,
-            uncertainty_participation_floor=uncertainty_participation_floor,
-            uncertainty_alpha=uncertainty_alpha,
-        )
+        localization_kwargs = {
+            "reid_csv_path": reid_csv_path,
+            "calibration": calibration_parameters,
+            "bounds_mode": bounds_mode,
+            "buffer_m": buffer_m,
+            "manual_bounds": manual_bounds,
+            "grid_resolution_m": grid_resolution_m,
+            "dynamic_sigma_alpha": dynamic_sigma_alpha,
+            "confidence_cutoff": confidence_cutoff,
+            "uncertainty_participation_floor": uncertainty_participation_floor,
+            "uncertainty_alpha": uncertainty_alpha,
+        }
+        if min_time_gap_sec is not None:
+            localization_kwargs["min_time_gap_sec"] = min_time_gap_sec
+        if min_baseline_m is not None:
+            localization_kwargs["min_baseline_m"] = min_baseline_m
+        if max_uncertainty_radius_m is not None:
+            localization_kwargs["max_uncertainty_radius_m"] = max_uncertainty_radius_m
+
+        result = run_localization(**localization_kwargs)
         session = get_session(session_id)
         if session is not None:
             session["active_localization"] = result

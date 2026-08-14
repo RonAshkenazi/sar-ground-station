@@ -1448,7 +1448,7 @@ def test_localization_engine_auto_bounds(tmp_path) -> None:
 
     from app.modules.localization.engine import run_localization
 
-    result = run_localization(reid, _calibration_params(), grid_resolution_m=25)
+    result = run_localization(reid, _calibration_params(), grid_resolution_m=25, min_time_gap_sec=0)
 
     assert result["successful_clusters"] == 1
     assert result["bounds"]["lat_min"] < 32.0
@@ -1482,7 +1482,14 @@ def test_localization_engine_multiple_clusters(tmp_path) -> None:
 
     from app.modules.localization.engine import run_localization
 
-    result = run_localization(reid, _calibration_params(), grid_resolution_m=50)
+    result = run_localization(
+        reid,
+        _calibration_params(),
+        grid_resolution_m=50,
+        min_time_gap_sec=0,
+        min_baseline_m=0,
+        max_uncertainty_radius_m=100,
+    )
 
     assert result["total_clusters"] == 2
     assert result["successful_clusters"] == 2
@@ -1501,7 +1508,13 @@ def test_localization_engine_partial_failure(tmp_path) -> None:
 
     from app.modules.localization.engine import run_localization
 
-    result = run_localization(reid, _calibration_params(), grid_resolution_m=50)
+    result = run_localization(
+        reid,
+        _calibration_params(),
+        grid_resolution_m=50,
+        min_time_gap_sec=0,
+        max_uncertainty_radius_m=100,
+    )
 
     assert result["total_clusters"] == 2
     assert result["successful_clusters"] == 1
@@ -1525,7 +1538,7 @@ def test_localization_engine_ransac_removes_outlier(tmp_path) -> None:
 
     from app.modules.localization.engine import run_localization
 
-    result = run_localization(reid, _calibration_params(), grid_resolution_m=20)
+    result = run_localization(reid, _calibration_params(), grid_resolution_m=20, min_time_gap_sec=0)
 
     assert result["cluster_results"][0]["sample_count"] == 3
     assert any("RANSAC removed 1 outlier" in warning for warning in result["warnings"])
@@ -1552,8 +1565,8 @@ def test_localization_confidence_cutoff_filters_peaks(tmp_path) -> None:
 
     from app.modules.localization.engine import run_localization
 
-    low_cutoff = run_localization(reid, _calibration_params(), grid_resolution_m=10, confidence_cutoff=0.0)
-    high_cutoff = run_localization(reid, _calibration_params(), grid_resolution_m=10, confidence_cutoff=1.0)
+    low_cutoff = run_localization(reid, _calibration_params(), grid_resolution_m=10, confidence_cutoff=0.0, min_time_gap_sec=0)
+    high_cutoff = run_localization(reid, _calibration_params(), grid_resolution_m=10, confidence_cutoff=1.0, min_time_gap_sec=0)
 
     assert len(low_cutoff["cluster_results"][0]["candidate_peaks"]) > len(high_cutoff["cluster_results"][0]["candidate_peaks"])
 
@@ -1572,8 +1585,8 @@ def test_localization_dynamic_sigma_increases_with_distance(tmp_path) -> None:
 
     from app.modules.localization.engine import run_localization
 
-    fixed_sigma = run_localization(reid, _calibration_params(), grid_resolution_m=10, dynamic_sigma_alpha=0.0)
-    dynamic_sigma = run_localization(reid, _calibration_params(), grid_resolution_m=10, dynamic_sigma_alpha=0.1)
+    fixed_sigma = run_localization(reid, _calibration_params(), grid_resolution_m=10, dynamic_sigma_alpha=0.0, min_time_gap_sec=0)
+    dynamic_sigma = run_localization(reid, _calibration_params(), grid_resolution_m=10, dynamic_sigma_alpha=0.1, min_time_gap_sec=0)
 
     assert fixed_sigma["cluster_results"][0]["grid_cells"] != dynamic_sigma["cluster_results"][0]["grid_cells"]
 
@@ -1692,7 +1705,12 @@ def test_noise_cluster_not_localized(tmp_path) -> None:
 
     from app.modules.localization.engine import run_localization
 
-    result = run_localization(reid_csv, {"rssi_at_1m": -40.0, "path_loss_n": 3.0, "sigma": 6.0})
+    result = run_localization(
+        reid_csv,
+        {"rssi_at_1m": -40.0, "path_loss_n": 3.0, "sigma": 6.0},
+        min_time_gap_sec=0,
+        min_baseline_m=0,
+    )
     cluster_ids = [cluster["cluster_id"] for cluster in result["cluster_results"]]
 
     assert "noise" not in cluster_ids
@@ -1898,7 +1916,7 @@ def test_result_analysis_api_evaluate(tmp_path, monkeypatch) -> None:
                 "status": "success",
                 "primary_peak": {"lat": 32.0, "lon": 34.0, "value": 0.9},
                 "uncertainty_regions": [{"center_lat": 32.0, "center_lon": 34.0, "radius_m": 20.0}],
-                "sample_count": 5,
+                "sample_count": 10,
             }
         ]
     }
@@ -2004,7 +2022,15 @@ def test_rerun_reid_stage_accepted(tmp_path, monkeypatch) -> None:
 
     response = client.post(
         f"/api/sessions/{session_id}/result-analysis/rerun",
-        json={"stage": "reid", "reid_params": {}, "localization_params": {"grid_resolution_m": 20}},
+        json={
+            "stage": "reid",
+            "reid_params": {},
+            "localization_params": {
+                "grid_resolution_m": 20,
+                "min_time_gap_sec": 0,
+                "max_uncertainty_radius_m": 100,
+            },
+        },
     )
 
     assert response.status_code == 200
@@ -2027,7 +2053,7 @@ def test_localization_engine_uppercase_csv(tmp_path) -> None:
 
     from app.modules.localization.engine import run_localization
 
-    assert run_localization(reid, _calibration_params())["successful_clusters"] == 1
+    assert run_localization(reid, _calibration_params(), min_time_gap_sec=0)["successful_clusters"] == 1
 
 
 def test_localization_api_404_unknown_session() -> None:
@@ -2094,7 +2120,12 @@ def test_localization_api_200_returns_execution_id(tmp_path, monkeypatch) -> Non
 
     response = client.post(
         f"/api/sessions/{session_id}/localization/run",
-        json={"reid_csv_filename": "scan_REID.csv", "grid_resolution_m": 20},
+        json={
+            "reid_csv_filename": "scan_REID.csv",
+            "grid_resolution_m": 20,
+            "min_time_gap_sec": 0,
+            "max_uncertainty_radius_m": 100,
+        },
     )
     body = response.json()
     execution_response = client.get(f"/api/executions/{body['execution_id']}")

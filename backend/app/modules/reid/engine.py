@@ -6,10 +6,12 @@ import math
 from pathlib import Path
 from typing import Any
 
+from scipy.optimize import linear_sum_assignment
+
 
 # --- Re-ID association ---
 _REID_01_ASSOCIATION_THRESHOLD: float = 0.80  # FD-01: legacy value; Bleach match_threshold
-_REID_02_CONFLICT_RESOLUTION = "greedy_best_valid_match"
+_REID_02_CONFLICT_RESOLUTION = "optimal_assignment"
 _REID_MIN_ROWS_SINGLETON: int = 5  # singletons with fewer rows than this go to noise
 
 # --- Bleach scoring weights (raw sum, not normalized) ---
@@ -292,6 +294,34 @@ def _association_score(
 
 
 def _resolve_conflicts(associations: list[tuple[str, str, float]]) -> list[tuple[str, str, float]]:
+    if not associations:
+        return []
+
+    srcs = list(dict.fromkeys(src for src, _dst, _score in associations))
+    dsts = list(dict.fromkeys(dst for _src, dst, _score in associations))
+    src_index = {src: index for index, src in enumerate(srcs)}
+    dst_index = {dst: index for index, dst in enumerate(dsts)}
+    disallowed_cost = 2.0
+    costs = [[disallowed_cost for _dst in dsts] for _src in srcs]
+    scores_by_pair: dict[tuple[str, str], float] = {}
+
+    for src, dst, score in associations:
+        pair = (src, dst)
+        if pair not in scores_by_pair or score > scores_by_pair[pair]:
+            scores_by_pair[pair] = score
+            costs[src_index[src]][dst_index[dst]] = 1.0 - score
+
+    row_indices, col_indices = linear_sum_assignment(costs)
+    accepted = []
+    for row_index, col_index in zip(row_indices, col_indices):
+        pair = (srcs[row_index], dsts[col_index])
+        score = scores_by_pair.get(pair)
+        if score is not None:
+            accepted.append((pair[0], pair[1], score))
+    return accepted
+
+
+def _resolve_conflicts_greedy(associations: list[tuple[str, str, float]]) -> list[tuple[str, str, float]]:
     accepted = []
     predecessors: set[str] = set()
     successors: set[str] = set()

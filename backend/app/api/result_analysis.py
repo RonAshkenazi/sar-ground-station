@@ -28,6 +28,8 @@ class EvaluateRequest(BaseModel):
     w_distance: float = 0.30
     w_count: float = 0.20
     w_radius: float = 0.10
+    min_reliable_samples: int | None = None
+    min_reliability_threshold: float | None = None
     cluster_ids: list[str] | None = None
     gt_ids: list[str] | None = None
 
@@ -125,18 +127,24 @@ def run_evaluation(session_id: str, body: EvaluateRequest) -> dict:
         allowed = set(body.gt_ids)
         gt_points = [point for point in gt_points if point["gt_id"] in allowed]
 
-    result = evaluate(
-        predictions=predictions,
-        gt_points=gt_points,
-        ratio_gate=body.ratio_gate,
-        max_match_dist_m=body.max_match_dist_m,
-        r_normalize_m=body.r_normalize_m,
-        d_free_m=body.d_free_m,
-        w_containment=body.w_containment,
-        w_distance=body.w_distance,
-        w_count=body.w_count,
-        w_radius=body.w_radius,
-    )
+    eval_kwargs = {
+        "predictions": predictions,
+        "gt_points": gt_points,
+        "ratio_gate": body.ratio_gate,
+        "max_match_dist_m": body.max_match_dist_m,
+        "r_normalize_m": body.r_normalize_m,
+        "d_free_m": body.d_free_m,
+        "w_containment": body.w_containment,
+        "w_distance": body.w_distance,
+        "w_count": body.w_count,
+        "w_radius": body.w_radius,
+    }
+    if body.min_reliable_samples is not None:
+        eval_kwargs["min_reliable_samples"] = body.min_reliable_samples
+    if body.min_reliability_threshold is not None:
+        eval_kwargs["min_reliability_threshold"] = body.min_reliability_threshold
+
+    result = evaluate(**eval_kwargs)
     session["last_evaluation"] = result
     return result
 
@@ -266,6 +274,9 @@ def rerun_from_result_analysis(session_id: str, body: dict, background_tasks: Ba
         loc_params.get("confidence_cutoff", 0.50),
         loc_params.get("uncertainty_participation_floor", _LOC_UNCERTAINTY_PARTICIPATION_FLOOR),
         loc_params.get("uncertainty_alpha", _LOC_UNCERTAINTY_ALPHA),
+        loc_params.get("min_time_gap_sec"),
+        loc_params.get("min_baseline_m"),
+        loc_params.get("max_uncertainty_radius_m"),
     )
     session["last_evaluation"] = None
     return {"status": "pending", "localization_execution_id": execution_id}
@@ -285,6 +296,9 @@ def _run_reid_then_localization_task(
         _LOC_06_GRID_RESOLUTION_M,
         _LOC_07_DYNAMIC_SIGMA_ALPHA,
         _LOC_08_CONFIDENCE_CUTOFF,
+        _LOC_14_MIN_TIME_GAP_SEC,
+        _LOC_15_MIN_BASELINE_M,
+        _LOC_16_MAX_UNCERTAINTY_RADIUS_M,
         _LOC_UNCERTAINTY_ALPHA,
         _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
         run_localization,
@@ -312,6 +326,9 @@ def _run_reid_then_localization_task(
                 _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
             ),
             uncertainty_alpha=loc_params.get("uncertainty_alpha", _LOC_UNCERTAINTY_ALPHA),
+            min_time_gap_sec=loc_params.get("min_time_gap_sec", _LOC_14_MIN_TIME_GAP_SEC),
+            min_baseline_m=loc_params.get("min_baseline_m", _LOC_15_MIN_BASELINE_M),
+            max_uncertainty_radius_m=loc_params.get("max_uncertainty_radius_m", _LOC_16_MAX_UNCERTAINTY_RADIUS_M),
         )
         session = get_session(session_id)
         if session is not None:
@@ -351,6 +368,9 @@ def _run_enrichment_then_reid_then_localization_task(
         _LOC_06_GRID_RESOLUTION_M,
         _LOC_07_DYNAMIC_SIGMA_ALPHA,
         _LOC_08_CONFIDENCE_CUTOFF,
+        _LOC_14_MIN_TIME_GAP_SEC,
+        _LOC_15_MIN_BASELINE_M,
+        _LOC_16_MAX_UNCERTAINTY_RADIUS_M,
         _LOC_UNCERTAINTY_ALPHA,
         _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
         run_localization,
@@ -387,6 +407,9 @@ def _run_enrichment_then_reid_then_localization_task(
                 _LOC_UNCERTAINTY_PARTICIPATION_FLOOR,
             ),
             uncertainty_alpha=loc_params.get("uncertainty_alpha", _LOC_UNCERTAINTY_ALPHA),
+            min_time_gap_sec=loc_params.get("min_time_gap_sec", _LOC_14_MIN_TIME_GAP_SEC),
+            min_baseline_m=loc_params.get("min_baseline_m", _LOC_15_MIN_BASELINE_M),
+            max_uncertainty_radius_m=loc_params.get("max_uncertainty_radius_m", _LOC_16_MAX_UNCERTAINTY_RADIUS_M),
         )
         session = get_session(session_id)
         if session is not None:
