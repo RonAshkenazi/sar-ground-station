@@ -164,7 +164,10 @@ wifi_context_weight\` \* \`ENR-06 ble_context_weight\`
 \#### Shared
 
 \* \`REID-01 association_threshold\` \* \`REID-02
-conflict_resolution_mode = greedy_best_valid_match\`
+conflict_resolution_mode = optimal_assignment\` --- default changed
+from legacy \`greedy_best_valid_match\` per FD-R6 (see
+\`.ai/founder_decisions.md\`); \`greedy_best_valid_match\` remains
+available as a legacy/reference mode
 
 \#### Wi-Fi
 
@@ -201,7 +204,10 @@ rssi_at_1m\` --- default from calibration/fallback \* \`LOC-05 sigma\`
 \`LOC-07 dynamic_sigma_alpha\` \* \`LOC-08 confidence_cutoff\` \*
 \`LOC-09 enable_ransac\` \* \`LOC-10 ransac_thresh_db\` \* \`LOC-11
 ransac_iters\` \* \`LOC-12 uncertainty_target_mass_q\` --- default
-\`0.68\` \* \`LOC-13 min_samples_per_cluster\` --- default \`3\`
+\`0.68\` \* \`LOC-13 min_samples_per_cluster\` --- default \`3\` \*
+\`LOC-14 min_time_gap_sec\` --- default \`30\` (FD-L3) \* \`LOC-15
+min_baseline_m\` --- default \`5\` (FD-L3) \* \`LOC-16
+max_uncertainty_radius_m\` --- default \`35\` (FD-RA2)
 
 \### 3.6 View Controls
 
@@ -220,7 +226,21 @@ default \`true\` \* \`RA-04 score_weight_containment\` --- \`TBD\` \*
 score_weight_emitter_count\` --- \`TBD\` \* \`RA-07
 score_weight_euclidean_distance\` --- \`TBD\` \* \`RA-08
 advanced_internal_parameter_exposure\` --- default \`false\` \* \`RA-09
-advanced_internal_parameter_set\` --- \`TBD\`
+advanced_internal_parameter_set\` --- \`TBD\` \* \`RA-10
+min_reliable_samples\` --- default \`10\` (FD-RA1) \* \`RA-11
+max_uncertainty_radius_m\` --- \*\*superseded by \`LOC-16\` (FD-RA2);
+removed from evaluate()\*\* \* \`RA-12 min_reliability_threshold\` ---
+default \`0.3\` (FD-RA1)
+
+Cluster reliability filter (RA-10/RA-12): a per-cluster reliability
+score based on sample count alone (radius removed per FD-RA2, see
+\`LOC-16\`) is used to (a) inflate a cluster's GT-matching cost
+proportional to its unreliability, and (b) hard-exclude clusters below
+\`min_reliability_threshold\` from match candidacy entirely, reported
+separately as \`excluded_low_reliability\` rather than silently
+dropped. Does not affect \`RA-05\`'s aggregate median-radius score
+term. See \`.ai/founder_decisions.md\` FD-RA1/FD-RA2 for the formula
+and rationale.
 
 \-\--
 
@@ -288,6 +308,15 @@ Partition filtered rows by \`cluster_id\`.
 Require valid GPS, RSSI, and at least 3 usable rows. Failed clusters
 emit warnings while others continue.
 
+Also require genuine scanner movement across the cluster's raw samples
+(\`LOC-14 min_time_gap_sec\`, \`LOC-15 min_baseline_m\`, both required,
+FD-L3): a cluster observed from a single near-stationary vantage point
+carries no angular/triangulation information, and can otherwise report
+a deceptively tight uncertainty radius. Clusters failing this gate fail
+the same way as insufficient-sample clusters --- \`failure_reason:
+"insufficient_movement"\` --- and are excluded from both display and
+Result Analysis matching via the existing failed-cluster mechanism.
+
 \#### Step 4 --- Optional RANSAC Pre-Cleaning
 
 If enabled, apply RANSAC before grid computation using RSSI residual
@@ -321,6 +350,17 @@ detection and uncertainty estimation.
 Detect local maxima, filter by \`confidence_cutoff\`, retain at most 3
 candidate peaks, and mark the strongest as the default displayed point.
 
+Before retaining, de-duplicate candidates that belong to the same
+connected high-posterior component (FD-L4): if two local maxima's
+\`uncertainty_participation_floor\`-flood-filled regions are identical
+or overlapping, they are the same broad feature, not two independently
+plausible target positions --- keep only the strongest of the group.
+Candidates whose components are genuinely disjoint (a real posterior
+valley between them) are unaffected and continue to Step 9/10
+unchanged, including the combined-radius merge when their regions
+overlap --- multiple genuinely separated strong peaks still represent
+a real chance of multiple targets and must not be collapsed to one.
+
 \#### Step 9 --- Build Local Uncertainty Radii per Candidate Peak
 
 For each retained peak, define a local basin and derive a local
@@ -346,6 +386,14 @@ Each successful cluster returns:
 \* cluster identifier \* primary peak point \* retained candidate peaks
 \* grid/heatmap data \* uncertainty metadata \* one-to-three reported
 uncertainty regions \* status \* warnings \* parameter snapshot
+
+If the primary reported uncertainty region's radius exceeds
+\`LOC-16 max_uncertainty_radius_m\` (default 35m, FD-RA2), the cluster
+is converted to a failed result instead --- \`failure_reason:
+"uncertainty_radius_too_large"\`, radius attached for auditability ---
+using the same failed-cluster mechanism as the Step 3 movement gate,
+so it is excluded from both display and Result Analysis matching with
+no separate plumbing.
 
 Failed clusters return failed status plus warnings.
 
@@ -474,10 +522,22 @@ threshold.
 
 \#### Step 7 --- Conflict Resolution
 
-Use greedy best-valid-match conflict resolution:
+Use optimal one-to-one assignment for conflict resolution (default
+\`optimal_assignment\`, FD-R6):
 
-\* choose best surviving candidate above threshold \* preserve time
-consistency \* prevent contradictory assignments
+\* each dynamic unit may accept at most one predecessor and one
+successor edge, drawn only from candidates above the association
+threshold \* resolve the full candidate graph at once by maximizing
+total accepted score (bipartite maximum-weight matching), rather than
+committing to the single highest-scoring edge seen so far \* preserve
+time consistency \* prevent contradictory assignments
+
+Rationale: a purely greedy best-valid-match pass (the legacy mode,
+still available as \`greedy_best_valid_match\`) commits to the
+globally highest-scoring edge first and can strand a unit that has
+multiple valid above-threshold candidates if all of them get claimed
+by other units first --- discarding otherwise-valid matches instead of
+finding the best overall arrangement. See FD-R6 for field evidence.
 
 \#### Step 8 --- Build Dynamic Clusters
 
