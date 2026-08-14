@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { circleIntersectsPolygon, circleIntersectionAreaM2, pointInPolygon, polygonAreaM2, sumCircleAreasM2 } from './geoUtils'
+import {
+  circleIntersectsPolygon,
+  circleIntersectionAreaM2,
+  pointInPolygon,
+  polygonAreaM2,
+  sumCircleAreasM2,
+  unionCircleAreaWithinPolygonM2,
+} from './geoUtils'
 
 describe('geoUtils', () => {
   const square: [number, number][] = [
@@ -59,5 +66,64 @@ describe('geoUtils', () => {
     ])
 
     expect(area).toBeCloseTo(Math.PI * 500)
+  })
+
+  it('unionCircleAreaWithinPolygonM2 sums non-overlapping circles inside a large polygon', () => {
+    const bigSquare: [number, number][] = [
+      [0, 0], [0, 0.01], [0.01, 0.01], [0.01, 0],
+    ]
+    const circles = [
+      { centerLat: 0.004, centerLon: 0.004, radiusM: 20 },
+      { centerLat: 0.006, centerLon: 0.006, radiusM: 20 },
+    ]
+
+    const union = unionCircleAreaWithinPolygonM2(circles, bigSquare, 80000)
+    const expected = circles.reduce(
+      (sum, circle) => sum + circleIntersectionAreaM2(circle.centerLat, circle.centerLon, circle.radiusM, bigSquare),
+      0,
+    )
+
+    expect(union).toBeGreaterThan(expected * 0.9)
+    expect(union).toBeLessThan(expected * 1.1)
+  })
+
+  it('unionCircleAreaWithinPolygonM2 counts fully overlapping circles once', () => {
+    const bigSquare: [number, number][] = [
+      [0, 0], [0, 0.01], [0.01, 0.01], [0.01, 0],
+    ]
+    const circles = [
+      { centerLat: 0.005, centerLon: 0.005, radiusM: 25 },
+      { centerLat: 0.005, centerLon: 0.005, radiusM: 25 },
+    ]
+
+    const union = unionCircleAreaWithinPolygonM2(circles, bigSquare, 80000)
+    const expected = circleIntersectionAreaM2(0.005, 0.005, 25, bigSquare)
+
+    expect(union).toBeGreaterThan(expected * 0.9)
+    expect(union).toBeLessThan(expected * 1.1)
+  })
+
+  it('unionCircleAreaWithinPolygonM2 matches single circle clipping at polygon edge', () => {
+    const circle = { centerLat: 0.0005, centerLon: 0.001, radiusM: 50 }
+
+    const union = unionCircleAreaWithinPolygonM2([circle], square, 80000)
+    const expected = circleIntersectionAreaM2(circle.centerLat, circle.centerLon, circle.radiusM, square)
+
+    expect(union).toBeGreaterThan(expected * 0.88)
+    expect(union).toBeLessThan(expected * 1.12)
+  })
+
+  it('unionCircleAreaWithinPolygonM2 never exceeds polygon area for overlapping oversized circles', () => {
+    const area = unionCircleAreaWithinPolygonM2(
+      [
+        { centerLat: 0.0005, centerLon: 0.0005, radiusM: 150 },
+        { centerLat: 0.00045, centerLon: 0.0005, radiusM: 150 },
+        { centerLat: 0.00055, centerLon: 0.0005, radiusM: 150 },
+      ],
+      square,
+      80000,
+    )
+
+    expect(area).toBeLessThanOrEqual(polygonAreaM2(square))
   })
 })

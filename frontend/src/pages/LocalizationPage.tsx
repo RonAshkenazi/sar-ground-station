@@ -46,6 +46,9 @@ export default function LocalizationPage() {
     confidence_cutoff: 0.75,
     uncertainty_participation_floor: 0.8,
     uncertainty_alpha: 1.5,
+    min_time_gap_sec: 30,
+    min_baseline_m: 5,
+    max_uncertainty_radius_m: 35,
   })
 
   function confidenceBadge(tier: string | undefined) {
@@ -116,11 +119,12 @@ export default function LocalizationPage() {
   const visibleClusters = useMemo(
     () =>
       (result?.cluster_results ?? []).filter((cluster) => {
+        if (cluster.status !== 'success') return false
         if (hiddenClusters.has(cluster.cluster_id)) return false
         if (!showStaticClusters && cluster.cluster_type === 'static') return false
         if (!showNoiseClusters && cluster.cluster_type === 'noise') return false
         if (lassoPolygon) {
-          if (cluster.status !== 'success' || !cluster.primary_peak) return false
+          if (!cluster.primary_peak) return false
           if (!pointInPolygon(cluster.primary_peak.lat, cluster.primary_peak.lon, lassoPolygon)) return false
         }
         return true
@@ -143,6 +147,9 @@ export default function LocalizationPage() {
         confidence_cutoff: locSettings.confidence_cutoff,
         uncertainty_participation_floor: locSettings.uncertainty_participation_floor,
         uncertainty_alpha: locSettings.uncertainty_alpha,
+        min_time_gap_sec: locSettings.min_time_gap_sec,
+        min_baseline_m: locSettings.min_baseline_m,
+        max_uncertainty_radius_m: locSettings.max_uncertainty_radius_m,
       })
       setExecution({
         execution_id: started.execution_id,
@@ -277,6 +284,57 @@ export default function LocalizationPage() {
                       setLocSettings((previous) => ({
                         ...previous,
                         uncertainty_participation_floor: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="loc-param-row">
+                  <span>
+                    min_time_gap_sec <HelpTip text={HELP.loc_min_time_gap_sec} />
+                  </span>
+                  <input
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={locSettings.min_time_gap_sec}
+                    onChange={(event) =>
+                      setLocSettings((previous) => ({
+                        ...previous,
+                        min_time_gap_sec: Math.max(0, Number(event.target.value)),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="loc-param-row">
+                  <span>
+                    min_baseline_m <HelpTip text={HELP.loc_min_baseline_m} />
+                  </span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    value={locSettings.min_baseline_m}
+                    onChange={(event) =>
+                      setLocSettings((previous) => ({
+                        ...previous,
+                        min_baseline_m: Math.max(0, Number(event.target.value)),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="loc-param-row">
+                  <span>
+                    max_uncertainty_radius_m <HelpTip text={HELP.loc_max_uncertainty_radius_m} />
+                  </span>
+                  <input
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={locSettings.max_uncertainty_radius_m}
+                    onChange={(event) =>
+                      setLocSettings((previous) => ({
+                        ...previous,
+                        max_uncertainty_radius_m: Math.max(0, Number(event.target.value)),
                       }))
                     }
                   />

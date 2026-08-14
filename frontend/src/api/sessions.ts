@@ -258,6 +258,9 @@ export const runLocalization = (
     confidence_cutoff?: number
     uncertainty_participation_floor?: number
     uncertainty_alpha?: number
+    min_time_gap_sec?: number
+    min_baseline_m?: number
+    max_uncertainty_radius_m?: number
   },
 ) =>
   apiFetch<{ execution_id: string; status: string }>(
@@ -306,6 +309,12 @@ export interface EvaluationResult {
   }>
   duplicates: Array<{ cluster_id: string; competing_for_gt_id: string; distance_m: number; cost: number }>
   possible_merges: Array<{ cluster_id: string; candidate_gt_ids: string[]; distances_m: number[] }>
+  excluded_low_reliability: Array<{
+    cluster_id: string
+    num_samples: number | null
+    radius_m: number | null
+    reliability: number
+  }>
   metrics: {
     recall: number
     precision: number
@@ -331,6 +340,8 @@ export interface EvaluationResult {
     w_distance: number
     w_count: number
     w_radius: number
+    min_reliable_samples: number
+    min_reliability_threshold: number
   }
   n_predictions: number
   n_gt: number
@@ -380,6 +391,8 @@ export const runEvaluation = (
     w_distance?: number
     w_count?: number
     w_radius?: number
+    min_reliable_samples?: number
+    min_reliability_threshold?: number
     cluster_ids?: string[]
     gt_ids?: string[]
   } = {},
@@ -398,6 +411,9 @@ export const rerunFromResultAnalysis = (
     confidence_cutoff?: number
     uncertainty_participation_floor?: number
     uncertainty_alpha?: number
+    min_time_gap_sec?: number
+    min_baseline_m?: number
+    max_uncertainty_radius_m?: number
     buffer_m?: number
   },
   reid_params?: {

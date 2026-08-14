@@ -18,7 +18,7 @@ import {
 import HelpTip from '../components/HelpTip'
 import { HELP } from '../helpTexts'
 import { useSession } from '../state/SessionContext'
-import { circleIntersectionAreaM2, pointInPolygon, polygonAreaM2 } from '../utils/geoUtils'
+import { circleIntersectionAreaM2, pointInPolygon, polygonAreaM2, unionCircleAreaWithinPolygonM2 } from '../utils/geoUtils'
 import './ResultAnalysisPage.css'
 
 type MapLayer = 'satellite' | 'osm'
@@ -54,6 +54,8 @@ export default function ResultAnalysisPage() {
     w_distance: 0.3,
     w_count: 0.2,
     w_radius: 0.1,
+    min_reliable_samples: 10,
+    min_reliability_threshold: 0.3,
   })
   const [rerunStage, setRerunStage] = useState<'localization' | 'reid' | 'enrichment'>('localization')
   const [enrichmentParams, setEnrichmentParams] = useState({
@@ -69,6 +71,9 @@ export default function ResultAnalysisPage() {
     confidence_cutoff: 0.75,
     uncertainty_participation_floor: 0.8,
     uncertainty_alpha: 1.5,
+    min_time_gap_sec: 30,
+    min_baseline_m: 5,
+    max_uncertainty_radius_m: 35,
     buffer_m: 25.0,
   })
   const [reidParams, setReidParams] = useState({
@@ -138,13 +143,18 @@ export default function ResultAnalysisPage() {
     const nExpected = expectedEmitters
     const sCount = Math.max(0, 1 - Math.abs(nCircles - nExpected) / nExpected)
     const lassoArea = polygonAreaM2(lassoPolygon)
-    // Area = sum of intersection areas for all circles of qualifying clusters.
-    const circleArea = visibleClusters.reduce((sum, cluster) => {
-      return sum + cluster.uncertainty_regions.reduce((s, region) => {
-        if (region.radius_m <= 0) return s
-        return s + circleIntersectionAreaM2(region.center_lat, region.center_lon, region.radius_m, lassoPolygon)
-      }, 0)
-    }, 0)
+    const circleArea = unionCircleAreaWithinPolygonM2(
+      visibleClusters.flatMap((cluster) =>
+        cluster.uncertainty_regions
+          .filter((region) => region.radius_m > 0)
+          .map((region) => ({
+            centerLat: region.center_lat,
+            centerLon: region.center_lon,
+            radiusM: region.radius_m,
+          })),
+      ),
+      lassoPolygon,
+    )
     const areaRatio = lassoArea > 0 ? circleArea / lassoArea : 1
     const sArea = Math.max(0, 1 - areaRatio * areaRatio)
     const total = (sCount + sArea) / 2
@@ -461,6 +471,32 @@ export default function ResultAnalysisPage() {
             <p className="eval-param-hint">
               Distance/Radius: ≤ free zone → 100%. Beyond: score = 1 − ((d − free zone) / penalty scale)².
             </p>
+            <h3 className="param-heading">Cluster reliability filter</h3>
+            <div className="eval-param-row">
+              <label>
+                Min samples <HelpTip text={HELP.min_reliable_samples} />
+              </label>
+              <input
+                type="number"
+                step="1"
+                min="1"
+                value={evalParams.min_reliable_samples}
+                onChange={(event) => setEvalParams((previous) => ({ ...previous, min_reliable_samples: Number(event.target.value) }))}
+              />
+            </div>
+            <div className="eval-param-row">
+              <label>
+                Min reliability <HelpTip text={HELP.min_reliability_threshold} />
+              </label>
+              <input
+                type="number"
+                step="0.05"
+                min="0"
+                max="1"
+                value={evalParams.min_reliability_threshold}
+                onChange={(event) => setEvalParams((previous) => ({ ...previous, min_reliability_threshold: Number(event.target.value) }))}
+              />
+            </div>
             {(['w_containment', 'w_distance', 'w_count', 'w_radius'] as const).map((key) => (
               <label key={key} className="eval-param-row">
                 <span>
@@ -1070,6 +1106,14 @@ function Diagnostics({ result, possibleMergeIds }: { result: EvaluationResult; p
         <DiagnosticList title="False Positives" helpText={HELP.false_positives} items={result.false_positives.map((item) => item.cluster_id)} />
         <DiagnosticList title="False Negatives" helpText={HELP.false_negatives} items={result.false_negatives.map((item) => item.label || item.gt_id)} />
         <DiagnosticList title="Duplicates" helpText={HELP.duplicates} items={result.duplicates.map((item) => item.cluster_id)} />
+        <DiagnosticList
+          title="Low Reliability"
+          helpText={HELP.excluded_low_reliability}
+          items={(result.excluded_low_reliability ?? []).map(
+            (item) =>
+              `${item.cluster_id}: samples ${item.num_samples ?? '-'}, radius ${item.radius_m?.toFixed(1) ?? '-'}m, reliability ${item.reliability.toFixed(3)}`,
+          )}
+        />
       </div>
     </section>
   )
@@ -1093,6 +1137,9 @@ function localizationHelpText(key: string): string {
     confidence_cutoff: HELP.loc_confidence_cutoff,
     uncertainty_participation_floor: HELP.loc_uncertainty_participation_floor,
     uncertainty_alpha: HELP.loc_uncertainty_alpha,
+    min_time_gap_sec: HELP.loc_min_time_gap_sec,
+    min_baseline_m: HELP.loc_min_baseline_m,
+    max_uncertainty_radius_m: HELP.loc_max_uncertainty_radius_m,
     buffer_m: HELP.loc_buffer_m,
   }
   return helpByKey[key] ?? HELP.loc_grid_resolution_m

@@ -24,6 +24,8 @@ export const HELP = {
     'A GT point where two or more clusters are too similar in distance for a confident assignment. No score contribution. Reduce the ratio gate or rerun with tighter Re-ID params.',
   possible_merge:
     'A cluster within range of two or more GT points. It may have captured signals from multiple devices simultaneously. Consider lowering the Re-ID association threshold to split it.',
+  excluded_low_reliability:
+    'Clusters excluded from GT matching because their sample count and uncertainty radius make them too unreliable to trust.',
   association_clear:
     'The nearest cluster was significantly closer than the second-nearest (ratio gate passed). The match is considered unambiguous.',
   ratio_gate:
@@ -34,6 +36,10 @@ export const HELP = {
     'Distance threshold below which Distance and Radius scores are perfect (100%). Errors within this zone are considered negligible for SAR purposes.',
   r_normalize_m:
     'Scale of the quadratic penalty beyond the free zone. At free zone + this value, the score reaches 0%. Larger = gentler drop for larger errors.',
+  min_reliable_samples:
+    'Minimum sample count used for cluster reliability. Clusters with fewer samples are treated as less trustworthy for GT matching.',
+  min_reliability_threshold:
+    'Minimum reliability required for a cluster to be considered as a GT match candidate. Set to 0 to keep all clusters eligible.',
   w_containment: 'Weight of the Containment sub-score in the total (0-1). All four weights should sum to 1.0.',
   w_distance: 'Weight of the Distance sub-score in the total (0-1).',
   w_count: 'Weight of the Count sub-score in the total (0-1).',
@@ -62,6 +68,12 @@ export const HELP = {
     'Minimum relative evidence for a reading to contribute to the uncertainty radius calculation. Filters out weak, distant detections.',
   loc_uncertainty_alpha:
     'Multiplier for the uncertainty radius size. Higher = more conservative (larger) radius estimates.',
+  loc_min_time_gap_sec:
+    'Minimum time span required across a cluster before localization. A single stationary vantage point gives no directional information even if samples repeat.',
+  loc_min_baseline_m:
+    'Minimum scanner movement required across a cluster before localization. Near-stationary samples can create falsely tight uncertainty circles.',
+  loc_max_uncertainty_radius_m:
+    'Maximum uncertainty radius allowed for a localized cluster. Larger radii are hidden from the map and excluded from Result Analysis.',
   loc_buffer_m: 'How many metres to extend the search area beyond the drone GPS track bounding box.',
   reid_association_threshold:
     'Minimum similarity score (0-1) to link two detections as the same device. Higher = stricter, purer clusters. Lower = more links, risk of merging different devices.',

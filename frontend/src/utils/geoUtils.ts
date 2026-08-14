@@ -123,3 +123,64 @@ export function circleIntersectionAreaM2(
   }
   return total === 0 ? 0 : (inside / total) * Math.PI * radiusM * radiusM
 }
+
+export function unionCircleAreaWithinPolygonM2(
+  circles: Array<{ centerLat: number; centerLon: number; radiusM: number }>,
+  polygon: [number, number][],
+  maxSamples = 40000,
+): number {
+  const validCircles = circles.filter((circle) => circle.radiusM > 0)
+  if (validCircles.length === 0 || polygon.length < 3) return 0
+
+  const lats = polygon.map((point) => point[0])
+  const lons = polygon.map((point) => point[1])
+  const latMin = Math.min(...lats)
+  const latMax = Math.max(...lats)
+  const lonMin = Math.min(...lons)
+  const lonMax = Math.max(...lons)
+  if (latMin === latMax || lonMin === lonMax) return 0
+
+  const centLat = polygon.reduce((sum, point) => sum + point[0], 0) / polygon.length
+  const mPerDegLat = 111320
+  const mPerDegLon = 111320 * Math.cos((centLat * Math.PI) / 180)
+  const heightM = (latMax - latMin) * mPerDegLat
+  const widthM = (lonMax - lonMin) * mPerDegLon
+  const aspect = widthM > 0 && heightM > 0 ? widthM / heightM : 1
+  let nLat = Math.max(1, Math.round(Math.sqrt(maxSamples / Math.max(aspect, 0.0001))))
+  let nLon = Math.max(1, Math.round(nLat * aspect))
+  while (nLat * nLon > maxSamples) {
+    nLat = Math.max(1, Math.floor(nLat * 0.95))
+    nLon = Math.max(1, Math.floor(nLon * 0.95))
+  }
+
+  const latStep = (latMax - latMin) / nLat
+  const lonStep = (lonMax - lonMin) / nLon
+  const cellAreaM2 = Math.abs(latStep * mPerDegLat * lonStep * mPerDegLon)
+  const projectedCircles = validCircles.map((circle) => ({
+    x: circle.centerLon * mPerDegLon,
+    y: circle.centerLat * mPerDegLat,
+    radiusM: circle.radiusM,
+  }))
+
+  let coveredCells = 0
+  for (let latIndex = 0; latIndex < nLat; latIndex++) {
+    const cellLat = latMin + (latIndex + 0.5) * latStep
+    const cellY = cellLat * mPerDegLat
+    for (let lonIndex = 0; lonIndex < nLon; lonIndex++) {
+      const cellLon = lonMin + (lonIndex + 0.5) * lonStep
+      if (!pointInPolygon(cellLat, cellLon, polygon)) continue
+      const cellX = cellLon * mPerDegLon
+      if (
+        projectedCircles.some((circle) => {
+          const dx = cellX - circle.x
+          const dy = cellY - circle.y
+          return dx * dx + dy * dy <= circle.radiusM * circle.radiusM
+        })
+      ) {
+        coveredCells++
+      }
+    }
+  }
+
+  return Math.min(coveredCells * cellAreaM2, polygonAreaM2(polygon))
+}
