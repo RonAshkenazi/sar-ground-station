@@ -1,0 +1,802 @@
+[
+  {
+    "label": "2026-06-11T09-46-44Z",
+    "path": "runtime\\Saved Scans\\scan - field test 1 - 19.1\\2026-06-11T09-46-44Z",
+    "zone_corners": [
+      [
+        31.249525123,
+        34.805780048
+      ],
+      [
+        31.249525123,
+        34.806410506
+      ],
+      [
+        31.250064109,
+        34.806410506
+      ],
+      [
+        31.250064109,
+        34.805780048
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 1,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.20600888000075834,
+      "s_count": 0.0,
+      "s_area": 0.4120177600015167,
+      "n_circles": 5,
+      "n_expected": 1,
+      "circle_area_m2": 2760.47999999644,
+      "zone_area_m2": 3600.0,
+      "area_ratio": 0.766799999999011,
+      "clusters_successful": 32,
+      "clusters_in_zone": 4,
+      "clusters_outside_zone": 28
+    },
+    "test2_total": 0.9996,
+    "combined": 0.6028044400003791
+  },
+  {
+    "label": "2026-08-13T21-34-51Z",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\2026-08-13T21-34-51Z",
+    "zone_corners": [
+      [
+        31.280480245,
+        34.787109225
+      ],
+      [
+        31.280480245,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.787109225
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.8211261319176164,
+      "s_count": 1.0,
+      "s_area": 0.6422522638352328,
+      "n_circles": 3,
+      "n_expected": 3,
+      "circle_area_m2": 4348.409559424674,
+      "zone_area_m2": 7270.126953125,
+      "area_ratio": 0.5981201686657683,
+      "clusters_successful": 8,
+      "clusters_in_zone": 3,
+      "clusters_outside_zone": 5
+    },
+    "test2_total": 0.9186,
+    "combined": 0.8698630659588082
+  },
+  {
+    "label": "2026-08-14T08-02-59Z",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\2026-08-14T08-02-59Z",
+    "zone_corners": [
+      [
+        31.280480245,
+        34.787109225
+      ],
+      [
+        31.280480245,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.787109225
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.9137207052461107,
+      "s_count": 1.0,
+      "s_area": 0.8274414104922215,
+      "n_circles": 3,
+      "n_expected": 3,
+      "circle_area_m2": 3020.02324557404,
+      "zone_area_m2": 7270.126953125,
+      "area_ratio": 0.4154017206365165,
+      "clusters_successful": 8,
+      "clusters_in_zone": 3,
+      "clusters_outside_zone": 5
+    },
+    "test2_total": 0.8234,
+    "combined": 0.8685603526230554
+  },
+  {
+    "label": "2026-08-14T08-44-46Z",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\2026-08-14T08-44-46Z",
+    "zone_corners": [
+      [
+        31.280620507,
+        34.787109225
+      ],
+      [
+        31.280620507,
+        34.787755333
+      ],
+      [
+        31.281232749,
+        34.787755333
+      ],
+      [
+        31.281232749,
+        34.787109225
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.8246692298163414,
+      "s_count": 1.0,
+      "s_area": 0.6493384596326828,
+      "n_circles": 3,
+      "n_expected": 3,
+      "circle_area_m2": 2480.8331513466583,
+      "zone_area_m2": 4189.416015625,
+      "area_ratio": 0.5921668180228585,
+      "clusters_successful": 5,
+      "clusters_in_zone": 3,
+      "clusters_outside_zone": 2
+    },
+    "test2_total": 0.9897,
+    "combined": 0.9071846149081707
+  },
+  {
+    "label": "2026-08-14T08-47-36Z",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\2026-08-14T08-47-36Z",
+    "zone_corners": [
+      [
+        31.280620507,
+        34.787104667
+      ],
+      [
+        31.280620507,
+        34.787755333
+      ],
+      [
+        31.281189493,
+        34.787755333
+      ],
+      [
+        31.281189493,
+        34.787104667
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.797239871017235,
+      "s_count": 1.0,
+      "s_area": 0.5944797420344702,
+      "n_circles": 3,
+      "n_expected": 3,
+      "circle_area_m2": 2496.844164290667,
+      "zone_area_m2": 3920.89453125,
+      "area_ratio": 0.6368047251438465,
+      "clusters_successful": 5,
+      "clusters_in_zone": 3,
+      "clusters_outside_zone": 2
+    },
+    "test2_total": 0.9897,
+    "combined": 0.8934699355086175
+  },
+  {
+    "label": "_SUPERSEDED_S1-1_C1_old_20260813T201404Z",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\_SUPERSEDED_S1-1_C1_old_20260813T201404Z",
+    "zone_corners": [
+      [
+        31.28061272,
+        34.7870037
+      ],
+      [
+        31.28061272,
+        34.787634365
+      ],
+      [
+        31.281151707,
+        34.787634365
+      ],
+      [
+        31.281151707,
+        34.7870037
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 1,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.789869534176265,
+      "s_count": 1.0,
+      "s_area": 0.5797390683525301,
+      "n_circles": 1,
+      "n_expected": 1,
+      "circle_area_m2": 2333.7900000285936,
+      "zone_area_m2": 3599.998046875,
+      "area_ratio": 0.6482753517198305,
+      "clusters_successful": 3,
+      "clusters_in_zone": 1,
+      "clusters_outside_zone": 2
+    },
+    "test2_total": 0.9248,
+    "combined": 0.8573347670881325
+  },
+  {
+    "label": "S1-1_C0",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S1-1_C0",
+    "zone_corners": [
+      [
+        31.28061272,
+        34.7870037
+      ],
+      [
+        31.28061272,
+        34.787634365
+      ],
+      [
+        31.281151707,
+        34.787634365
+      ],
+      [
+        31.281151707,
+        34.7870037
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 1,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.9690056910557721,
+      "s_count": 1.0,
+      "s_area": 0.9380113821115441,
+      "n_circles": 1,
+      "n_expected": 1,
+      "circle_area_m2": 896.3100000109816,
+      "zone_area_m2": 3599.998046875,
+      "area_ratio": 0.2489751350807062,
+      "clusters_successful": 1,
+      "clusters_in_zone": 1,
+      "clusters_outside_zone": 0
+    },
+    "test2_total": 0.9933,
+    "combined": 0.981152845527886
+  },
+  {
+    "label": "S1-1_C1",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S1-1_C1",
+    "zone_corners": [
+      [
+        31.28061272,
+        34.7870037
+      ],
+      [
+        31.28061272,
+        34.787634365
+      ],
+      [
+        31.281151707,
+        34.787634365
+      ],
+      [
+        31.281151707,
+        34.7870037
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 1,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.789869534176265,
+      "s_count": 1.0,
+      "s_area": 0.5797390683525301,
+      "n_circles": 1,
+      "n_expected": 1,
+      "circle_area_m2": 2333.7900000285936,
+      "zone_area_m2": 3599.998046875,
+      "area_ratio": 0.6482753517198305,
+      "clusters_successful": 3,
+      "clusters_in_zone": 1,
+      "clusters_outside_zone": 2
+    },
+    "test2_total": 0.9248,
+    "combined": 0.8573347670881325
+  },
+  {
+    "label": "S1-2_C0",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S1-2_C0",
+    "zone_corners": [
+      [
+        31.28061272,
+        34.7870037
+      ],
+      [
+        31.28061272,
+        34.787634365
+      ],
+      [
+        31.281151707,
+        34.787634365
+      ],
+      [
+        31.281151707,
+        34.7870037
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 1,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.9942594325209466,
+      "s_count": 1.0,
+      "s_area": 0.9885188650418933,
+      "n_circles": 1,
+      "n_expected": 1,
+      "circle_area_m2": 385.7400000047261,
+      "zone_area_m2": 3599.998046875,
+      "area_ratio": 0.10715005813393982,
+      "clusters_successful": 1,
+      "clusters_in_zone": 1,
+      "clusters_outside_zone": 0
+    },
+    "test2_total": 0.9995,
+    "combined": 0.9968797162604733
+  },
+  {
+    "label": "S1-2_C2",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S1-2_C2",
+    "zone_corners": [
+      [
+        31.28061272,
+        34.7870037
+      ],
+      [
+        31.28061272,
+        34.787634365
+      ],
+      [
+        31.281151707,
+        34.787634365
+      ],
+      [
+        31.281151707,
+        34.7870037
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 1,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.9915142029796156,
+      "s_count": 1.0,
+      "s_area": 0.983028405959231,
+      "n_circles": 1,
+      "n_expected": 1,
+      "circle_area_m2": 468.9900000057461,
+      "zone_area_m2": 3599.998046875,
+      "area_ratio": 0.1302750706803454,
+      "clusters_successful": 1,
+      "clusters_in_zone": 1,
+      "clusters_outside_zone": 0
+    },
+    "test2_total": 0.9991,
+    "combined": 0.9953071014898078
+  },
+  {
+    "label": "S2_C0",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S2_C0",
+    "zone_corners": [
+      [
+        31.280480245,
+        34.787109225
+      ],
+      [
+        31.280480245,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.787109225
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.8529557314673157,
+      "s_count": 1.0,
+      "s_area": 0.7059114629346315,
+      "n_circles": 3,
+      "n_expected": 3,
+      "circle_area_m2": 3942.584799718724,
+      "zone_area_m2": 7270.126953125,
+      "area_ratio": 0.5422993057946586,
+      "clusters_successful": 8,
+      "clusters_in_zone": 3,
+      "clusters_outside_zone": 5
+    },
+    "test2_total": 0.9892,
+    "combined": 0.9210778657336578
+  },
+  {
+    "label": "S2_C1",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S2_C1",
+    "zone_corners": [
+      [
+        31.280480245,
+        34.787109225
+      ],
+      [
+        31.280480245,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.787109225
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.9137207052461107,
+      "s_count": 1.0,
+      "s_area": 0.8274414104922215,
+      "n_circles": 3,
+      "n_expected": 3,
+      "circle_area_m2": 3020.02324557404,
+      "zone_area_m2": 7270.126953125,
+      "area_ratio": 0.4154017206365165,
+      "clusters_successful": 8,
+      "clusters_in_zone": 3,
+      "clusters_outside_zone": 5
+    },
+    "test2_total": 0.8234,
+    "combined": 0.8685603526230554
+  },
+  {
+    "label": "S2_C2",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S2_C2",
+    "zone_corners": [
+      [
+        31.280480245,
+        34.787109225
+      ],
+      [
+        31.280480245,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.787109225
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.46819187706528476,
+      "s_count": 0.33333333333333337,
+      "s_area": 0.6030504207972361,
+      "n_circles": 1,
+      "n_expected": 3,
+      "circle_area_m2": 4580.466040661305,
+      "zone_area_m2": 7270.126953125,
+      "area_ratio": 0.6300393473448812,
+      "clusters_successful": 1,
+      "clusters_in_zone": 1,
+      "clusters_outside_zone": 0
+    },
+    "test2_total": 0.7667,
+    "combined": 0.6174459385326424
+  },
+  {
+    "label": "S2_C3",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S2_C3",
+    "zone_corners": [
+      [
+        31.280480245,
+        34.787109225
+      ],
+      [
+        31.280480245,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.788021462
+      ],
+      [
+        31.281232749,
+        34.787109225
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.5177354814940813,
+      "s_count": 0.33333333333333337,
+      "s_area": 0.7021376296548293,
+      "n_circles": 1,
+      "n_expected": 3,
+      "circle_area_m2": 3967.8003858688458,
+      "zone_area_m2": 7270.126953125,
+      "area_ratio": 0.5457676889897117,
+      "clusters_successful": 1,
+      "clusters_in_zone": 1,
+      "clusters_outside_zone": 0
+    },
+    "test2_total": 0.0,
+    "combined": 0.25886774074704066
+  },
+  {
+    "label": "S3_C0",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S3_C0",
+    "zone_corners": [
+      [
+        31.280620507,
+        34.787104667
+      ],
+      [
+        31.280620507,
+        34.787755333
+      ],
+      [
+        31.281189493,
+        34.787755333
+      ],
+      [
+        31.281189493,
+        34.787104667
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.797239871017235,
+      "s_count": 1.0,
+      "s_area": 0.5944797420344702,
+      "n_circles": 3,
+      "n_expected": 3,
+      "circle_area_m2": 2496.844164290667,
+      "zone_area_m2": 3920.89453125,
+      "area_ratio": 0.6368047251438465,
+      "clusters_successful": 5,
+      "clusters_in_zone": 3,
+      "clusters_outside_zone": 2
+    },
+    "test2_total": 0.9897,
+    "combined": 0.8934699355086175
+  },
+  {
+    "label": "S3_C2",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S3_C2",
+    "zone_corners": [
+      [
+        31.280620507,
+        34.787104667
+      ],
+      [
+        31.280620507,
+        34.787755333
+      ],
+      [
+        31.281189493,
+        34.787755333
+      ],
+      [
+        31.281189493,
+        34.787104667
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.6217209041829203,
+      "s_count": 0.33333333333333337,
+      "s_area": 0.9101084750325071,
+      "n_circles": 1,
+      "n_expected": 3,
+      "circle_area_m2": 1175.559280381672,
+      "zone_area_m2": 3920.89453125,
+      "area_ratio": 0.29981915377022345,
+      "clusters_successful": 1,
+      "clusters_in_zone": 1,
+      "clusters_outside_zone": 0
+    },
+    "test2_total": 0.857,
+    "combined": 0.7393604520914601
+  },
+  {
+    "label": "S4_C0",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S4_C0",
+    "zone_corners": [
+      [
+        31.280340507,
+        34.786804668
+      ],
+      [
+        31.280340507,
+        34.787745332
+      ],
+      [
+        31.280959493,
+        34.787745332
+      ],
+      [
+        31.280959493,
+        34.786804668
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.3044375334461443,
+      "s_count": 0.0,
+      "s_area": 0.6088750668922887,
+      "n_circles": 6,
+      "n_expected": 3,
+      "circle_area_m2": 3856.5585185112136,
+      "zone_area_m2": 6166.548828125,
+      "area_ratio": 0.6253998186022373,
+      "clusters_successful": 7,
+      "clusters_in_zone": 5,
+      "clusters_outside_zone": 2
+    },
+    "test2_total": 0.8474,
+    "combined": 0.5759187667230722
+  },
+  {
+    "label": "S4_C1",
+    "path": "runtime\\Saved Scans\\Scan - test protocol\\S4_C1",
+    "zone_corners": [
+      [
+        31.280340507,
+        34.786804668
+      ],
+      [
+        31.280340507,
+        34.787745332
+      ],
+      [
+        31.280959493,
+        34.787745332
+      ],
+      [
+        31.280959493,
+        34.786804668
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 3,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 0.6890179270980097,
+      "s_count": 0.6666666666666667,
+      "s_area": 0.7113691875293526,
+      "n_circles": 4,
+      "n_expected": 3,
+      "circle_area_m2": 3312.9396193071293,
+      "zone_area_m2": 6166.548828125,
+      "area_ratio": 0.5372437179443305,
+      "clusters_successful": 5,
+      "clusters_in_zone": 3,
+      "clusters_outside_zone": 2
+    },
+    "test2_total": 0.8052,
+    "combined": 0.7471089635490049
+  },
+  {
+    "label": "2026-06-11T09-48-17Z",
+    "path": "runtime\\Saved Scans\\Scan09.02\\2026-06-11T09-48-17Z",
+    "zone_corners": [
+      [
+        31.249444924,
+        34.805780376
+      ],
+      [
+        31.249444924,
+        34.806579113
+      ],
+      [
+        31.250157198,
+        34.806579113
+      ],
+      [
+        31.250157198,
+        34.805780376
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 2,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 4.599677089212051e-08,
+      "s_count": 0.0,
+      "s_area": 9.199354178424102e-08,
+      "n_circles": 13,
+      "n_expected": 2,
+      "circle_area_m2": 6027.257535265597,
+      "zone_area_m2": 6027.2578125,
+      "area_ratio": 0.999999954003228,
+      "clusters_successful": 26,
+      "clusters_in_zone": 12,
+      "clusters_outside_zone": 14
+    },
+    "test2_total": 0.7988,
+    "combined": 0.3994000229983854
+  },
+  {
+    "label": "2026-06-11T09-49-06Z",
+    "path": "runtime\\Saved Scans\\Scan09.02\\2026-06-11T09-49-06Z",
+    "zone_corners": [
+      [
+        31.249444924,
+        34.805780376
+      ],
+      [
+        31.249444924,
+        34.806579113
+      ],
+      [
+        31.250157198,
+        34.806579113
+      ],
+      [
+        31.250157198,
+        34.805780376
+      ]
+    ],
+    "zone_rule": "GT bbox + 30 m buffer",
+    "expected_emitters": 2,
+    "circle_overlap_threshold": 0.2,
+    "test1": {
+      "total": 4.599677089212051e-08,
+      "s_count": 0.0,
+      "s_area": 9.199354178424102e-08,
+      "n_circles": 15,
+      "n_expected": 2,
+      "circle_area_m2": 6027.257535265597,
+      "zone_area_m2": 6027.2578125,
+      "area_ratio": 0.999999954003228,
+      "clusters_successful": 26,
+      "clusters_in_zone": 17,
+      "clusters_outside_zone": 9
+    },
+    "test2_total": 0.9,
+    "combined": 0.4500000229983855
+  }
+]
